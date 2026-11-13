@@ -1,0 +1,14 @@
+{
+  "name": "dmh-api",
+  "private": true,
+  "version": "1.0.0",
+  "description": "DMH API: backend for the Deepika Makeup & Hair website (bookings + AI chat). Uses the project root's node_modules and .env.",
+  "type": "module",
+  "scripts": {
+    "dev": "node ../node_modules/tsx/dist/cli.mjs watch index.ts",
+    "start": "node ../node_modules/tsx/dist/cli.mjs index.ts",
+    "db:setup": "node ../node_modules/tsx/dist/cli.mjs scripts/setup-db.ts",
+    "db:ingest": "node ../node_modules/tsx/dist/cli.mjs scripts/ingest.ts",
+    "admin:create": "node ../node_modules/tsx/dist/cli.mjs scripts/create-admin.ts"
+  }
+}

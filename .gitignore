@@ -1,0 +1,43 @@
+# Dependencies
+node_modules/
+jspm_packages/
+.pnpm-store
+.npm
+
+# Build output
+build/
+dist/
+coverage/
+*.lcov
+.nyc_output
+*.tsbuildinfo
+.vite/
+vite.config.js.timestamp-*
+vite.config.ts.timestamp-*
+.cache
+.eslintcache
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Secrets — never commit them. Only the template is shared.
+.env*
+!.env.example
+
+# Instagram data export — contains personal account data, never commit it.
+data/instagram/*
+!data/instagram/README.md
+
+# Full-size original client photos (~500 MB). Kept on this computer only; the site uses the
+# resized copies in public/images/portfolio.
+photos-originals/
