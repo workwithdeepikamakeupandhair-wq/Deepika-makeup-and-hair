@@ -4,7 +4,7 @@ import type {
   ChatCompletionFunctionTool,
   ChatCompletionMessageFunctionToolCall,
 } from 'openai/resources/chat/completions';
-import { BUSINESS_INFO as B } from '../src/data/portfolioData';
+import { BUSINESS_INFO as B } from '../src/data/portfolioData.js';
 
 const apiKey = process.env.OPENAI_API_KEY?.trim();
 

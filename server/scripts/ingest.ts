@@ -11,12 +11,12 @@
  * Re-run whenever the site content changes or you download a newer Instagram export.
  * Entries that no longer exist in either source are removed.
  */
-import '../env';
+import '../env.js';
 import path from 'node:path';
-import { getDb, pool, toVectorLiteral } from '../db';
-import { embed } from '../embeddings';
-import { INSTAGRAM_EXPORT_DIR, loadInstagramKnowledge } from '../instagram';
-import { buildKnowledge, embeddingText, type KnowledgeChunk } from '../knowledge';
+import { getDb, pool, toVectorLiteral } from '../db.js';
+import { embed } from '../embeddings.js';
+import { INSTAGRAM_EXPORT_DIR, loadInstagramKnowledge } from '../instagram.js';
+import { buildKnowledge, embeddingText, type KnowledgeChunk } from '../knowledge.js';
 
 const db = getDb(); // fail fast if DATABASE_URL is missing
 

@@ -1,7 +1,7 @@
 import { Router } from 'express';
-import { getDb } from '../db';
-import { asyncHandler, cleanString, HttpError, rateLimit } from '../http';
-import { cleanAttribution, sourceFromAttribution } from '../leads';
+import { getDb } from '../db.js';
+import { asyncHandler, cleanString, HttpError, rateLimit } from '../http.js';
+import { cleanAttribution, sourceFromAttribution } from '../leads.js';
 
 export const bookingsRouter = Router();
 

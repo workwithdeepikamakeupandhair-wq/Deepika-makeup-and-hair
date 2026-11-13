@@ -2,9 +2,9 @@
  * Retrieval shared by every chat channel (website widget and WhatsApp): finds the knowledge chunks closest to the
  * conversation in Neon (pgvector), and picks a search-only answer when no language model is available.
  */
-import { getDb, toVectorLiteral } from './db';
-import { embed } from './embeddings';
-import { FALLBACK_ANSWER } from './knowledge';
+import { getDb, toVectorLiteral } from './db.js';
+import { embed } from './embeddings.js';
+import { FALLBACK_ANSWER } from './knowledge.js';
 
 /** Matches below this are not passed to the model at all. */
 const CONTEXT_MIN_SIMILARITY = 0.2;

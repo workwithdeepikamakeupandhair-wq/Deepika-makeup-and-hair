@@ -1,12 +1,15 @@
-import { pipeline, type FeatureExtractionPipeline } from '@huggingface/transformers';
+import { env, pipeline, type FeatureExtractionPipeline } from '@huggingface/transformers';
 
 /**
  * Local, free embedding model — runs inside Node, no API key.
- * Downloaded once (~25 MB) on first use and cached on disk.
+ * Downloaded once (~90 MB) on first use and cached on disk.
  * Produces 384-dimensional vectors (matches vector(384) in schema.sql).
  */
 export const EMBEDDING_MODEL = 'Xenova/all-MiniLM-L6-v2';
 export const EMBEDDING_DIMENSIONS = 384;
+
+// On Vercel only /tmp is writable: each new function instance downloads the model there once.
+if (process.env.VERCEL) env.cacheDir = '/tmp/transformers-cache';
 
 let extractor: Promise<FeatureExtractionPipeline> | null = null;
 

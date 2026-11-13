@@ -1,7 +1,7 @@
-import '../env';
+import '../env.js';
 import fs from 'node:fs';
 import path from 'node:path';
-import { getDb, pool } from '../db';
+import { getDb, pool } from '../db.js';
 
 const sql = fs.readFileSync(path.resolve(import.meta.dirname, '..', 'schema.sql'), 'utf8');
 

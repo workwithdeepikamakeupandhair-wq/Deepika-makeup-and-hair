@@ -1,7 +1,7 @@
 import { Router, type Response } from 'express';
-import { retrieve, searchOnlyAnswer, type ChatMessage } from '../assistant';
-import { asyncHandler, cleanString, HttpError, rateLimit } from '../http';
-import { buildSystemPrompt, openai, OPENAI_MODEL, streamChatCompletion } from '../llm';
+import { retrieve, searchOnlyAnswer, type ChatMessage } from '../assistant.js';
+import { asyncHandler, cleanString, HttpError, rateLimit } from '../http.js';
+import { buildSystemPrompt, openai, OPENAI_MODEL, streamChatCompletion } from '../llm.js';
 
 export const chatRouter = Router();
 

@@ -8,10 +8,11 @@
  * lead ID so nothing is lost, and the details can be looked up in Meta's Leads Center.
  */
 import express, { Router } from 'express';
-import { SERVICE_NOT_SPECIFIED } from '../../src/data/leads';
-import { getDb, pool } from '../db';
-import { BOOKABLE_SERVICES } from '../knowledge';
-import { answerVerification, validSignature } from '../meta';
+import { SERVICE_NOT_SPECIFIED } from '../../src/data/leads.js';
+import { inBackground } from '../background.js';
+import { getDb, pool } from '../db.js';
+import { BOOKABLE_SERVICES } from '../knowledge.js';
+import { answerVerification, validSignature } from '../meta.js';
 
 const LOG = '[meta-leads]';
 
@@ -179,7 +180,9 @@ metaLeadsRouter.post('/webhook', express.raw({ type: () => true, limit: '1mb' })
   for (const entry of body.entry ?? []) {
     for (const change of entry.changes ?? []) {
       if (change.field === 'leadgen' && change.value) {
-        saveLead(change.value).catch((err) => console.error(`${LOG} could not save lead:`, err instanceof Error ? err.message : err));
+        inBackground(saveLead(change.value), (err) =>
+          console.error(`${LOG} could not save lead:`, err instanceof Error ? err.message : err),
+        );
       }
     }
   }

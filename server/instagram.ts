@@ -12,7 +12,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import type { KnowledgeChunk } from './knowledge';
+import type { KnowledgeChunk } from './knowledge.js';
 
 export const INSTAGRAM_EXPORT_DIR = path.resolve(import.meta.dirname, '..', 'data', 'instagram');
 

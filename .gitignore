@@ -26,6 +26,9 @@ yarn-error.log*
 pnpm-debug.log*
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 
+# Vercel CLI (local project link and build output)
+.vercel
+
 # OS files
 .DS_Store
 Thumbs.db

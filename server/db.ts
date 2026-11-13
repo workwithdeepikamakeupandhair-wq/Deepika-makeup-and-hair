@@ -1,7 +1,7 @@
 import dns from 'node:dns';
 import net from 'node:net';
 import pg from 'pg';
-import { HttpError } from './http';
+import { HttpError } from './http.js';
 
 /**
  * Some ISP/router DNS servers refuse to resolve Neon hostnames (getaddrinfo ENOTFOUND), even though

@@ -76,6 +76,33 @@ npm start            # one server: website + DMH API on PORT (default 4000)
 
 Deploy to any Node host (Render, Railway, Fly.io, a VPS). Set `DATABASE_URL` (and optionally `PORT`) as environment variables.
 
+### Vercel
+
+The repo also runs on Vercel as is. Vercel serves the website from `dist/`, and the DMH API runs as a single Vercel
+Function: `api/index.ts` runs the same app as `server/app.ts`. `vercel.json` sends every `/api/*` request to that
+function and every other path to the website, so `/admin` also works when opened directly.
+
+1. Import the GitHub repo in Vercel. Use the **Vite** framework preset and leave the build settings as they are.
+2. Add the environment variables (Project → Settings → Environment Variables, or "Import .env" when creating the
+   project):
+   - `DATABASE_URL` and `OPENAI_API_KEY`
+   - `SESSION_SECRET`, recommended
+   - the WhatsApp/Meta values, if those webhooks point at the Vercel address
+
+   Redeploy after changing them.
+
+Things that differ from a normal server:
+
+- **Slower first chat answer:** each new function instance downloads the search model (~90 MB) to `/tmp`. The first
+  chat answer after a quiet spell can take a few seconds longer.
+- **Shorter WhatsApp memory:** the bot's chat memory lasts only while an instance stays warm, so after a quiet spell a
+  conversation starts fresh. Booking requests are always saved to the database. A normal server (Render) keeps the
+  memory.
+- **Smaller install:** `.npmrc` stops onnxruntime from downloading ~500 MB of GPU libraries on Linux; the model runs on
+  the CPU.
+- **Rules for server code:** relative imports in `server/` and `api/` end in `.js`, because Vercel runs these files as
+  plain ES modules. Webhook work that continues after the response goes through `inBackground()` (`server/background.ts`).
+
 ## WhatsApp bot
 
 Deepika's virtual assistant also answers customers on WhatsApp (`server/routes/whatsapp.ts`, prompt in `server/llm.ts`).
@@ -171,7 +198,8 @@ npm run admin:create
 ```
 
 It asks for the email, a name and a password (at least 10 characters, not shown while typing). Run it once per team
-member; everyone shows up in the "Assigned to" list. Set `SESSION_SECRET` in `.env` so logins survive server restarts.
+member; everyone shows up in the "Assigned to" list. Logins are signed with `SESSION_SECRET`, or, if it's not set, a key
+derived from `DATABASE_URL`, so they survive restarts.
 
 **Security.**
 - **Passwords:** stored as scrypt hashes.

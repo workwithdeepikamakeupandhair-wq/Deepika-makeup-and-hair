@@ -1,7 +1,7 @@
 /**
  * Shared lead helpers: turning `bookings` rows into dashboard leads, and working out which ad a lead came from.
  */
-import type { Lead } from '../src/data/leads';
+import type { Lead } from '../src/data/leads.js';
 
 /** Columns for a dashboard lead (event_date as text, so no time zone shifts it). */
 export const LEAD_COLUMNS = `

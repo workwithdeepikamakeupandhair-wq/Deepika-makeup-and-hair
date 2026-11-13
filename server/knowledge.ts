@@ -11,7 +11,7 @@ import {
   RUNWAY_LOOKS,
   SERVICES,
   VIDEO_TESTIMONIALS,
-} from '../src/data/portfolioData';
+} from '../src/data/portfolioData.js';
 
 export interface KnowledgeChunk {
   id: string;

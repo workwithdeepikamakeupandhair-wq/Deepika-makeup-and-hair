@@ -5,18 +5,26 @@
  */
 import crypto from 'node:crypto';
 import type { NextFunction, Request, Response } from 'express';
-import { getDb } from './db';
+import { getDb } from './db.js';
 
 const COOKIE = 'dmh_admin';
 const SESSION_DAYS = 7;
 const SCRYPT = { N: 16384, r: 8, p: 1, keyLength: 64 };
 
-let secret = process.env.SESSION_SECRET?.trim();
-if (!secret) {
-  // Works, but everyone is logged out whenever the server restarts
-  secret = crypto.randomBytes(32).toString('hex');
-  console.warn('[auth] SESSION_SECRET is not set in .env; dashboard logins will reset when DMH API restarts.');
+/**
+ * SESSION_SECRET signs the login cookie. Without it, a key is derived from DATABASE_URL (itself secret): stable
+ * across restarts and across Vercel's function instances, which each start separately. A random per-process key
+ * would log people out on every restart, and on Vercel at random (each instance would reject the others' cookies).
+ */
+function sessionSecret(): string {
+  const configured = process.env.SESSION_SECRET?.trim();
+  if (configured) return configured;
+  const databaseUrl = process.env.DATABASE_URL?.trim();
+  if (databaseUrl) return crypto.createHash('sha256').update(`dmh-admin-session\n${databaseUrl}`).digest('hex');
+  console.warn('[auth] Neither SESSION_SECRET nor DATABASE_URL is set; dashboard logins will reset when DMH API restarts.');
+  return crypto.randomBytes(32).toString('hex');
 }
+const secret = sessionSecret();
 
 const scrypt = (password: string, salt: Buffer, keyLength: number, opts: crypto.ScryptOptions) =>
   new Promise<Buffer>((resolve, reject) =>

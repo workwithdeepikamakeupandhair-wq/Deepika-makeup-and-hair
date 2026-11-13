@@ -2,11 +2,11 @@
  * Leads dashboard API (/api/admin). Everything except login needs the session cookie.
  */
 import { Router } from 'express';
-import { LEAD_SOURCES, LEAD_STAGE_IDS } from '../../src/data/leads';
-import { DUMMY_HASH, endSession, requireAdmin, sessionUser, startSession, verifyPassword } from '../auth';
-import { getDb } from '../db';
-import { asyncHandler, cleanString, HttpError, rateLimit } from '../http';
-import { LEAD_COLUMNS, LEAD_FROM, toLead, type LeadRow } from '../leads';
+import { LEAD_SOURCES, LEAD_STAGE_IDS } from '../../src/data/leads.js';
+import { DUMMY_HASH, endSession, requireAdmin, sessionUser, startSession, verifyPassword } from '../auth.js';
+import { getDb } from '../db.js';
+import { asyncHandler, cleanString, HttpError, rateLimit } from '../http.js';
+import { LEAD_COLUMNS, LEAD_FROM, toLead, type LeadRow } from '../leads.js';
 
 export const adminRouter = Router();
 

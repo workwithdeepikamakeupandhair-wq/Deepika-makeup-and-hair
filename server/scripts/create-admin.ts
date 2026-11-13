@@ -3,10 +3,10 @@
  *   npm run admin:create                      (asks for email, name and password; the password isn't shown)
  *   npm run admin:create -- --email a@b.com --name "Deepika"   (still asks for the password)
  */
-import '../env';
+import '../env.js';
 import readline from 'node:readline/promises';
-import { hashPassword } from '../auth';
-import { getDb, pool } from '../db';
+import { hashPassword } from '../auth.js';
+import { getDb, pool } from '../db.js';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const MIN_PASSWORD = 10;

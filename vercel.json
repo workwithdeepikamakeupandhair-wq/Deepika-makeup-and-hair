@@ -1,0 +1,14 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "rewrites": [
+    { "source": "/api/(.*)", "destination": "/api" },
+    { "source": "/(.*)", "destination": "/index.html" }
+  ],
+  "functions": {
+    "api/index.ts": {
+      "maxDuration": 120,
+      "includeFiles": "node_modules/onnxruntime-node/bin/napi-v6/linux/x64/*",
+      "excludeFiles": "{node_modules/onnxruntime-node/bin/napi-v6/darwin/**,node_modules/onnxruntime-node/bin/napi-v6/win32/**,node_modules/onnxruntime-node/bin/napi-v6/linux/arm64/**,photos-originals/**,public/**,dist/**}"
+    }
+  }
+}

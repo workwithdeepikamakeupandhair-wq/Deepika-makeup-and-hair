@@ -10,16 +10,19 @@
  * WHATSAPP_HUMAN_TAKEOVER_HOURS so the two never talk over each other.
  *
  * State (chat history, pauses, duplicate checks) is kept in memory: a restart only forgets recent context.
+ * On Vercel that memory lasts only while a function instance stays warm, so after a quiet spell the bot starts
+ * the conversation fresh (bookings are still saved in the database).
  */
 import express, { Router } from 'express';
-import { SERVICE_NOT_SPECIFIED } from '../../src/data/leads';
-import { BUSINESS_INFO as B } from '../../src/data/portfolioData';
-import { retrieve, searchOnlyAnswer, type ChatMessage } from '../assistant';
-import { getDb, pool } from '../db';
-import { BOOKABLE_SERVICES, businessFacts } from '../knowledge';
-import { sourceFromAdUrl } from '../leads';
-import { buildWhatsAppSystemPrompt, completeChatWithTools, openai, OPENAI_MODEL, type ChatTool } from '../llm';
-import { answerVerification, validSignature } from '../meta';
+import { SERVICE_NOT_SPECIFIED } from '../../src/data/leads.js';
+import { BUSINESS_INFO as B } from '../../src/data/portfolioData.js';
+import { retrieve, searchOnlyAnswer, type ChatMessage } from '../assistant.js';
+import { inBackground } from '../background.js';
+import { getDb, pool } from '../db.js';
+import { BOOKABLE_SERVICES, businessFacts } from '../knowledge.js';
+import { sourceFromAdUrl } from '../leads.js';
+import { buildWhatsAppSystemPrompt, completeChatWithTools, openai, OPENAI_MODEL, type ChatTool } from '../llm.js';
+import { answerVerification, validSignature } from '../meta.js';
 
 const LOG = '[whatsapp]';
 
@@ -92,6 +95,8 @@ interface Contact {
   pausedUntil: number;
   pending: string[];
   timer?: NodeJS.Timeout;
+  /** Ends the background wait for `timer` (it keeps a Vercel function alive until the reply is sent). */
+  timerDone?: () => void;
   busy: boolean;
   replyTimes: number[];
   lastMediaAck: number;
@@ -132,6 +137,8 @@ function pauseBot(c: Contact) {
   c.pending = [];
   clearTimeout(c.timer);
   c.timer = undefined;
+  c.timerDone?.();
+  c.timerDone = undefined;
 }
 
 function today() {
@@ -164,12 +171,15 @@ async function graphPost(path: string, body: unknown): Promise<void> {
 
 /** Blue ticks plus "typing…" while the answer is prepared (WhatsApp hides it on reply or after ~25 s). */
 function markReadAndTyping(messageId: string) {
-  graphPost(`${config.phoneNumberId}/messages`, {
-    messaging_product: 'whatsapp',
-    status: 'read',
-    message_id: messageId,
-    typing_indicator: { type: 'text' },
-  }).catch((err) => console.warn(`${LOG} could not mark as read:`, err.message));
+  inBackground(
+    graphPost(`${config.phoneNumberId}/messages`, {
+      messaging_product: 'whatsapp',
+      status: 'read',
+      message_id: messageId,
+      typing_indicator: { type: 'text' },
+    }),
+    (err) => console.warn(`${LOG} could not mark as read:`, err instanceof Error ? err.message : err),
+  );
 }
 
 /** Sends a text reply, or the same text with the welcome buttons under it. */
@@ -399,10 +409,16 @@ async function answer(waId: string, c: Contact): Promise<{ reply: string; turn: 
 function scheduleReply(waId: string, delay = GATHER_MS) {
   const c = contactFor(waId);
   clearTimeout(c.timer);
-  c.timer = setTimeout(() => {
-    c.timer = undefined;
-    void replyTo(waId);
-  }, delay);
+  c.timerDone?.(); // the earlier wait is replaced by this one
+  const replied = new Promise<void>((resolve) => {
+    c.timerDone = resolve;
+    c.timer = setTimeout(() => {
+      c.timer = undefined;
+      c.timerDone = undefined;
+      replyTo(waId).finally(resolve);
+    }, delay);
+  });
+  inBackground(replied, (err) => console.error(`${LOG} could not reply to ${who(waId)}:`, err));
 }
 
 async function replyTo(waId: string) {
@@ -518,7 +534,9 @@ function onCustomerMessage(m: IncomingMessage, profileName?: string) {
   c.lastActive = Date.now();
   if (profileName) c.profileName = profileName.slice(0, 80);
   if (m.referral?.source_type === 'ad') {
-    saveAdLead(m.from, c, m.referral).catch((err) => console.error(`${LOG} could not save ad lead:`, err instanceof Error ? err.message : err));
+    inBackground(saveAdLead(m.from, c, m.referral), (err) =>
+      console.error(`${LOG} could not save ad lead:`, err instanceof Error ? err.message : err),
+    );
   }
   const msgText = textOf(m);
   const media = MEDIA[m.type as keyof typeof MEDIA];
@@ -531,7 +549,7 @@ function onCustomerMessage(m: IncomingMessage, profileName?: string) {
 
   if (m.type === 'interactive' && m.interactive?.button_reply?.id === 'deepika') {
     markReadAndTyping(m.id);
-    void handOver(m.from, c);
+    inBackground(handOver(m.from, c), (err) => console.error(`${LOG} could not hand over ${who(m.from)}:`, err));
     return;
   }
 
@@ -547,9 +565,10 @@ function onCustomerMessage(m: IncomingMessage, profileName?: string) {
     if (!openai) {
       markReadAndTyping(m.id);
       remember(c, { role: 'user', content: media.marker });
-      sendReply(m.from, media.reply)
-        .then(() => remember(c, { role: 'assistant', content: media.reply }))
-        .catch((err) => console.error(`${LOG} could not reply to ${who(m.from)}:`, err.message));
+      inBackground(
+        sendReply(m.from, media.reply).then(() => remember(c, { role: 'assistant', content: media.reply })),
+        (err) => console.error(`${LOG} could not reply to ${who(m.from)}:`, err instanceof Error ? err.message : err),
+      );
       return;
     }
     c.pending.push(media.marker); // the model answers it together with any text sent alongside
