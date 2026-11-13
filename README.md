@@ -113,12 +113,18 @@ Things that differ from a normal server:
 
 Deepika's virtual assistant also answers customers on WhatsApp (`server/routes/whatsapp.ts`, prompt in `server/llm.ts`).
 
+**Its own number (default).** The assistant has its own WhatsApp number, separate from Deepika's, and nobody reads those
+chats. So for anything personal it gives Deepika's own WhatsApp links and phone, and when a customer asks for her, it
+saves them as a lead in the dashboard so she can contact them. The other way to run it is **coexistence**
+(`WHATSAPP_COEXISTENCE=true`), where the bot answers on Deepika's own number and she reads and replies in the same chats.
+See [Going live with coexistence](#going-live-with-coexistence).
+
 **Answers.** Every question is sent with the full business facts: all services with durations and what's included,
 location and service area, contact numbers, certification, pricing policy and the FAQ (`businessFacts()` in
 `server/knowledge.ts`). It also gets the closest knowledge-base entries (looks, Instagram captions, reviews). It never
 invents prices, availability, policies, addresses or products. For anything it doesn't know (trial sessions, deposits,
-studio address, brands…) it says Deepika will reply personally. It replies in the customer's language and declines
-off-topic requests.
+studio address, brands…), it offers to pass the question to Deepika and gives her direct WhatsApp. With coexistence it
+says she'll reply in the chat. It replies in the customer's language and declines off-topic requests.
 
 **Booking requests.** The assistant collects the name, service, date, location and number of people, sends a summary, and
 saves the request **only after the customer confirms**. Requests go into the same `bookings` table as the website form,
@@ -131,10 +137,15 @@ detail within a day, the same request is updated.
 - **Text, and taps on buttons:** answered after a 1.5-second pause, so several quick messages ("hi", "price for
   bridal?") get one reply. The customer sees blue ticks and "typing…" while it works. The first reply of a conversation
   carries three buttons: *Book appointment*, *Our services* and *Talk to Deepika*.
-- **Talk to Deepika:** the button, or asking for her in words, hands the chat over. The bot says Deepika will reply and
-  stays quiet in that chat for `WHATSAPP_HUMAN_TAKEOVER_HOURS` (default 12).
-- **Photos, videos, files and voice notes:** a short reply (at most every 30 minutes per chat). Photos get "Deepika will
-  look at it personally"; voice notes get a request to type the question. Stickers and reactions are ignored.
+- **Talk to Deepika:** the button, or asking for her in words, hands the customer over.
+  - *Own number:* they're saved as a lead in the dashboard (channel WhatsApp). The lead's "What they told us" holds the
+    reason and their recent messages, and asking again adds to the same lead. They also get Deepika's own WhatsApp and
+    phone, and the bot keeps answering if they ask more.
+  - *Coexistence:* the bot says Deepika will reply here and stays quiet in that chat for
+    `WHATSAPP_HUMAN_TAKEOVER_HOURS` (default 12).
+- **Photos, videos, files and voice notes:** a short reply, at most every 30 minutes per chat. The bot can't see them,
+  so it asks for them to be sent to Deepika's own WhatsApp; with coexistence it says she'll look at them. Voice notes
+  also get a request to type the question. Stickers and reactions are ignored.
 - **Old messages:** anything more than 10 minutes old (e.g. redelivered after downtime) is left for Deepika.
 - **Coexistence (Deepika's real number):** when she replies to a customer from the WhatsApp Business app, the bot stays
   quiet in that chat for `WHATSAPP_HUMAN_TAKEOVER_HOURS`.
@@ -161,8 +172,27 @@ function tools together with reasoning on that model. `OPENAI_TOOLS_REASONING_EF
    Click "Verify and save", then subscribe to the **messages** field.
 5. **Try it:** send a WhatsApp message from your phone to the test number. The bot answers.
 
-The "Generate token" token expires after about 24 hours. For anything longer, use a System User token (Meta Business
+The "Generate token" token expires after about an hour. For anything longer, use a System User token (Meta Business
 Settings → System users) with the `whatsapp_business_messaging` and `whatsapp_business_management` permissions.
+
+### Going live on the bot's own number
+
+1. **Get a number** that isn't on WhatsApp yet (or delete its WhatsApp account first) and can receive an SMS or call.
+2. **Add it:** App Dashboard → WhatsApp → API Setup → "Add phone number" (or WhatsApp Manager → Phone numbers). Pick a
+   display name, which Meta reviews, and verify the code.
+3. **Register it** for the Cloud API with a 6-digit PIN that you choose (two-step verification):
+   `POST /{phone-number-id}/register` with `{"messaging_product":"whatsapp","pin":"123456"}`.
+4. **Permanent token:** create a System User token, and give that system user access to the WhatsApp account.
+5. **Settings:** put the new number's Phone number ID and the token in the API's environment variables
+   (`WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_ACCESS_TOKEN`), then redeploy or restart.
+6. **Webhook:** point the webhook (WhatsApp → Configuration) at the API's public address,
+   `https://<api-address>/api/whatsapp/webhook`, subscribed to **messages**. If the number belongs to a different
+   WhatsApp Business Account than the test number, also subscribe the app to that account
+   (`POST /{waba-id}/subscribed_apps`).
+7. **Payment:** Meta may ask for a payment method on the account. Replies to a customer within 24 hours of their message
+   are free.
+
+Click-to-WhatsApp ads that point at the bot's number become leads in the dashboard automatically, with the ad's headline.
 
 ### Going live with coexistence
 
@@ -174,7 +204,8 @@ Cloud API. Requirements:
   only offers this to **Tech Providers / Solution Partners**. Either become a Tech Provider (App Dashboard → "Become a
   Partner"; needs business verification) or onboard through a provider that supports coexistence.
 - After onboarding, subscribe the webhook to **smb_message_echoes** as well as **messages**, so the bot knows when Deepika
-  replies herself. Then put the real number's Phone number ID and a permanent token in `.env`.
+  replies herself. Then put the real number's Phone number ID and a permanent token in `.env`, and set
+  `WHATSAPP_COEXISTENCE=true` so the bot says Deepika will reply in the chat instead of sending her links.
 - Deepika should open the WhatsApp Business app at least every ~2 weeks; long inactivity disconnects coexistence.
 - Messages she sends from the app stay free. Bot replies inside the 24-hour customer service window are free-form
   service messages.

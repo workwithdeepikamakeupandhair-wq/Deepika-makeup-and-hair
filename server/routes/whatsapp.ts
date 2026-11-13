@@ -4,10 +4,14 @@
  * It answers questions from the full business facts plus the RAG knowledge base, takes booking requests (saved to
  * the same `bookings` table as the website form, with source 'whatsapp'), and hands chats over to Deepika when asked.
  *
- * Works with Meta's test number now, and with Deepika's real number after "coexistence" onboarding, where she keeps
- * using the WhatsApp Business app on her phone. Customers' messages then reach both her app and this webhook. When
- * she replies from the app, Meta sends an `smb_message_echoes` webhook, and the bot steps back from that chat for
- * WHATSAPP_HUMAN_TAKEOVER_HOURS so the two never talk over each other.
+ * Two ways to run it:
+ * - Own number (default): the assistant has its own WhatsApp number, separate from Deepika's. Nobody reads these
+ *   chats, so for anything personal it gives Deepika's own WhatsApp and phone, and "Talk to Deepika" saves the
+ *   customer as a lead in the dashboard for her to contact. The bot keeps answering afterwards.
+ * - Coexistence (WHATSAPP_COEXISTENCE=true): the assistant answers on Deepika's own number, which she keeps using in
+ *   the WhatsApp Business app. She sees every chat; when she replies from the app, Meta sends an `smb_message_echoes`
+ *   webhook and the bot steps back from that chat for WHATSAPP_HUMAN_TAKEOVER_HOURS so the two never talk over each
+ *   other. "Talk to Deepika" pauses the bot the same way.
  *
  * State (chat history, pauses, duplicate checks) is kept in memory: a restart only forgets recent context.
  * On Vercel that memory lasts only while a function instance stays warm, so after a quiet spell the bot starts
@@ -15,7 +19,7 @@
  */
 import express, { Router } from 'express';
 import { SERVICE_NOT_SPECIFIED } from '../../src/data/leads.js';
-import { BUSINESS_INFO as B } from '../../src/data/portfolioData.js';
+import { BUSINESS_INFO as B, WHATSAPP_CONTACTS } from '../../src/data/portfolioData.js';
 import { retrieve, searchOnlyAnswer, type ChatMessage } from '../assistant.js';
 import { inBackground } from '../background.js';
 import { getDb, pool } from '../db.js';
@@ -47,6 +51,14 @@ export const missingWhatsAppSettings = Object.entries(REQUIRED).filter(([, v]) =
 export const whatsappEnabled = missingWhatsAppSettings.length === 0;
 export const whatsappPhoneNumberId = config.phoneNumberId;
 
+/** Coexistence: the bot shares Deepika's own number, so she reads these chats. Otherwise the bot has its own number. */
+const SHARED_NUMBER = /^(1|true|yes|on)$/i.test(process.env.WHATSAPP_COEXISTENCE?.trim() ?? '');
+export const whatsappMode = SHARED_NUMBER ? 'coexistence' : 'own_number';
+
+/** How to reach Deepika herself, for the bot's own number: her WhatsApp links and phone. */
+const DIRECT_WHATSAPP = WHATSAPP_CONTACTS.map((c) => `${c.url} (${c.country})`).join(' or ');
+const REACH_DEEPIKA = `message ${B.artist} on WhatsApp at ${DIRECT_WHATSAPP}, or call ${B.phonePrimary}`;
+
 /** Wait this long after a message for more ("hi" … "how much for bridal?") and answer them together. */
 const GATHER_MS = 1500;
 /** Customer messages older than this (e.g. redelivered after downtime) are left for Deepika. */
@@ -63,8 +75,14 @@ const FORGET_AFTER_MS = 24 * 3_600_000;
 const TIME_ZONE = 'America/New_York';
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-const FALLBACK = `Thank you for your message! I don't have that detail on hand, but ${B.artist} will reply to you personally here soon.`;
-const HANDOFF_REPLY = `Of course! I've let ${B.artist} know, and she'll reply to you personally here soon.`;
+const FALLBACK = SHARED_NUMBER
+  ? `Thank you for your message! I don't have that detail on hand, but ${B.artist} will reply to you personally here soon.`
+  : `Thank you for your message! I don't have that detail on hand. To ask ${B.artist} personally, please ${REACH_DEEPIKA}.`;
+const HANDOFF_REPLY = SHARED_NUMBER
+  ? `Of course! I've let ${B.artist} know, and she'll reply to you personally here soon.`
+  : `Of course! I've passed your number to ${B.artist}, and she'll contact you personally. To reach her right away, ${REACH_DEEPIKA}.`;
+/** Own number, when the hand-over couldn't be saved for Deepika. */
+const HANDOFF_DIRECT_REPLY = `Of course! To talk to ${B.artist} personally, please ${REACH_DEEPIKA}.`;
 
 /** Quick-reply buttons under the first reply of a conversation (titles max 20 characters). */
 const WELCOME_BUTTONS = [
@@ -79,12 +97,19 @@ const BUTTON_MEANING: Record<string, string> = {
 };
 
 /** How media shows up in the chat history, and the reply when there is no language model. */
-const MEDIA = {
-  image: { marker: '[The customer sent a photo, which you cannot see]', reply: `Thank you for sharing this! I can't view photos myself, but ${B.artist} will look at it and reply personally. Meanwhile, I'm happy to answer any questions by text.` },
-  video: { marker: '[The customer sent a video, which you cannot watch]', reply: `Thank you for sharing this! I can't watch videos myself, but ${B.artist} will see it and reply personally. Meanwhile, I'm happy to answer any questions by text.` },
-  document: { marker: '[The customer sent a file, which you cannot open]', reply: `Thank you! I can't open files myself, but ${B.artist} will look at it and reply personally. Meanwhile, I'm happy to answer any questions by text.` },
-  audio: { marker: '[The customer sent a voice message, which you cannot listen to: ask them to type their question]', reply: `I can't listen to voice messages yet. Could you type your question? ${B.artist} will also hear your message and reply personally.` },
-} as const;
+const MEDIA = SHARED_NUMBER
+  ? {
+      image: { marker: '[The customer sent a photo, which you cannot see]', reply: `Thank you for sharing this! I can't view photos myself, but ${B.artist} will look at it and reply personally. Meanwhile, I'm happy to answer any questions by text.` },
+      video: { marker: '[The customer sent a video, which you cannot watch]', reply: `Thank you for sharing this! I can't watch videos myself, but ${B.artist} will see it and reply personally. Meanwhile, I'm happy to answer any questions by text.` },
+      document: { marker: '[The customer sent a file, which you cannot open]', reply: `Thank you! I can't open files myself, but ${B.artist} will look at it and reply personally. Meanwhile, I'm happy to answer any questions by text.` },
+      audio: { marker: '[The customer sent a voice message, which you cannot listen to: ask them to type their question]', reply: `I can't listen to voice messages yet. Could you type your question? ${B.artist} will also hear your message and reply personally.` },
+    }
+  : {
+      image: { marker: '[The customer sent a photo, which you cannot see]', reply: `Thank you for sharing this! I can't view photos myself. To show ${B.artist} your inspiration or outfit, please send it to her directly on WhatsApp: ${DIRECT_WHATSAPP}. Meanwhile, I'm happy to answer any questions here.` },
+      video: { marker: '[The customer sent a video, which you cannot watch]', reply: `Thank you for sharing this! I can't watch videos myself. Please send it to ${B.artist} directly on WhatsApp: ${DIRECT_WHATSAPP}. Meanwhile, I'm happy to answer any questions here.` },
+      document: { marker: '[The customer sent a file, which you cannot open]', reply: `Thank you! I can't open files myself. Please send it to ${B.artist} directly on WhatsApp: ${DIRECT_WHATSAPP}. Meanwhile, I'm happy to answer any questions here.` },
+      audio: { marker: '[The customer sent a voice message, which you cannot listen to: ask them to type their question]', reply: `I can't listen to voice messages yet. Could you type your question? Voice messages for ${B.artist} herself can go to her WhatsApp: ${DIRECT_WHATSAPP}.` },
+    };
 
 const FACTS = businessFacts();
 
@@ -311,6 +336,42 @@ async function saveAdLead(waId: string, c: Contact, referral: Referral) {
   if (rows[0]) console.log(`${LOG} new ${source === 'instagram_ad' ? 'Instagram' : 'Facebook'} ad lead #${rows[0].id} from ${who(waId)}`);
 }
 
+/**
+ * Own number: nobody reads this chat, so asking for Deepika puts the customer in the leads dashboard (reason and
+ * recent messages in "What they told us") for her to contact. Adds to the customer's open WhatsApp lead if they have
+ * one. Returns the lead number, or null without a database.
+ */
+async function saveHandoffLead(waId: string, c: Contact, reason: string): Promise<string | null> {
+  if (!pool) return null;
+  const phone = `+${waId}`;
+  const recent = c.history
+    .filter((m) => m.role === 'user')
+    .slice(-4)
+    .map((m) => `- ${m.content.slice(0, 300)}`)
+    .join('\n');
+  const note = `Asked to talk to ${B.artist} on ${today().iso}${reason ? ` (${reason})` : ''}.${recent ? `\nRecent messages to the assistant:\n${recent}` : ''}`;
+  const db = getDb();
+  const open = await db.query<{ id: string }>(
+    `SELECT id FROM bookings WHERE channel = 'whatsapp' AND phone = $1 AND created_at > now() - interval '30 days'
+        AND status NOT IN ('converted', 'lost')
+      ORDER BY id DESC LIMIT 1`,
+    [phone],
+  );
+  if (open.rows[0]) {
+    await db.query(`UPDATE bookings SET notes = concat_ws(E'\\n\\n', notes, $1::text), updated_at = now() WHERE id = $2`, [note, open.rows[0].id]);
+    console.log(`${LOG} ${who(waId)} asked for ${B.artist}; noted on lead #${open.rows[0].id}`);
+    return open.rows[0].id;
+  }
+  const { rows } = await db.query<{ id: string }>(
+    `INSERT INTO bookings (full_name, phone, service, notes, source, channel)
+     VALUES ($1, $2, $3, $4, $5, 'whatsapp')
+     RETURNING id`,
+    [c.profileName || 'WhatsApp contact', phone, SERVICE_NOT_SPECIFIED, note, c.adSource ?? 'whatsapp'],
+  );
+  console.log(`${LOG} ${who(waId)} asked for ${B.artist}; new lead #${rows[0].id}`);
+  return rows[0].id;
+}
+
 function toolsFor(waId: string, c: Contact, turn: Turn): Record<string, ChatTool> {
   return {
     save_booking_request: {
@@ -347,7 +408,9 @@ function toolsFor(waId: string, c: Contact, turn: Turn): Record<string, ChatTool
         type: 'function',
         function: {
           name: 'handoff_to_deepika',
-          description: `Hand this chat over to ${B.artist}: the assistant stops replying here so she can reply personally.`,
+          description: SHARED_NUMBER
+            ? `Hand this chat over to ${B.artist}: the assistant stops replying here so she can reply personally.`
+            : `Pass this customer to ${B.artist}: saves their number and question to her leads list so she contacts them personally. You keep helping in this chat.`,
           strict: true,
           parameters: {
             type: 'object',
@@ -359,8 +422,16 @@ function toolsFor(waId: string, c: Contact, turn: Turn): Record<string, ChatTool
       },
       run: async (args) => {
         turn.handoff = true;
-        console.log(`${LOG} ${who(waId)} handed over to Deepika (${text(args.reason, 120) || 'no reason given'})`);
-        return { ok: true, note: `${B.artist} will reply personally in this chat. Tell the customer that, briefly.` };
+        const reason = text(args.reason, 200);
+        console.log(`${LOG} ${who(waId)} handed over to Deepika (${reason || 'no reason given'})`);
+        if (SHARED_NUMBER) return { ok: true, note: `${B.artist} will reply personally in this chat. Tell the customer that, briefly.` };
+        const lead = await saveHandoffLead(waId, c, reason).catch((err) => {
+          console.error(`${LOG} could not save the hand-over for ${who(waId)}:`, err instanceof Error ? err.message : err);
+          return null;
+        });
+        return lead
+          ? { ok: true, note: `Saved for ${B.artist}. Tell the customer briefly that she'll contact them personally, and that to reach her right away they can ${REACH_DEEPIKA}.` }
+          : { ok: false, note: `Couldn't pass it on. Tell the customer to ${REACH_DEEPIKA}.` };
       },
     },
   };
@@ -370,12 +441,13 @@ function toolsFor(waId: string, c: Contact, turn: Turn): Record<string, ChatTool
 
 /**
  * Without the language model, the best-matching knowledge entry is sent as is. Entries written for the website
- * point people to WhatsApp links or the website's booking button, which makes no sense inside WhatsApp, so those
- * get the general fallback instead.
+ * point people to the website's booking button, which makes no sense inside WhatsApp, so those get the general
+ * fallback instead; so do Deepika's WhatsApp links when the customer is already on her number (coexistence).
  */
 function searchAnswerForWhatsApp(retrieved: Awaited<ReturnType<typeof retrieve>>): string {
   const found = searchOnlyAnswer(retrieved, FALLBACK);
-  return /wa\.me|Book a Consultation/i.test(found) ? FALLBACK : found;
+  const unsuitable = SHARED_NUMBER ? /wa\.me|Book a Consultation/i : /Book a Consultation/i;
+  return unsuitable.test(found) ? FALLBACK : found;
 }
 
 async function answer(waId: string, c: Contact): Promise<{ reply: string; turn: Turn }> {
@@ -391,6 +463,8 @@ async function answer(waId: string, c: Contact): Promise<{ reply: string; turn: 
     todayIso: date.iso,
     profileName: c.profileName,
     canSaveBookings: Boolean(pool),
+    sharedNumber: SHARED_NUMBER,
+    reachDeepika: REACH_DEEPIKA,
   });
   try {
     const reply = await completeChatWithTools([{ role: 'system', content: system }, ...c.history], toolsFor(waId, c, turn), AbortSignal.timeout(60_000));
@@ -447,7 +521,8 @@ async function replyTo(waId: string) {
     await sendReply(waId, body, firstReply && !turn.handoff && !turn.savedRequest);
     c.replyTimes.push(Date.now());
     remember(c, { role: 'assistant', content: body });
-    if (turn.handoff) pauseBot(c);
+    // Coexistence: Deepika takes over this chat. Own number: nobody else answers here, so the bot keeps helping.
+    if (turn.handoff && SHARED_NUMBER) pauseBot(c);
     console.log(`${LOG} replied to ${who(waId)}${turn.savedRequest ? ` (booking request #${turn.savedRequest})` : ''}${turn.handoff ? ' and handed over to Deepika' : ''}`);
   } catch (err) {
     console.error(`${LOG} could not reply to ${who(waId)}:`, err instanceof Error ? err.message : err);
@@ -456,14 +531,26 @@ async function replyTo(waId: string) {
   }
 }
 
-/** "Talk to Deepika" button: no model needed. */
+/**
+ * "Talk to Deepika" button: no model needed. Coexistence: the bot pauses so Deepika can reply in this chat.
+ * Own number: the customer is saved as a lead for Deepika and gets her direct WhatsApp and phone.
+ */
 async function handOver(waId: string, c: Contact) {
+  let reply = HANDOFF_REPLY;
+  if (SHARED_NUMBER) {
+    pauseBot(c);
+  } else {
+    const lead = await saveHandoffLead(waId, c, 'tapped "Talk to Deepika"').catch((err) => {
+      console.error(`${LOG} could not save the hand-over for ${who(waId)}:`, err instanceof Error ? err.message : err);
+      return null;
+    });
+    if (!lead) reply = HANDOFF_DIRECT_REPLY;
+  }
   remember(c, { role: 'user', content: 'Talk to Deepika' });
-  pauseBot(c);
   try {
-    await sendReply(waId, HANDOFF_REPLY);
-    remember(c, { role: 'assistant', content: HANDOFF_REPLY });
-    console.log(`${LOG} ${who(waId)} tapped "Talk to Deepika"; bot paused in that chat`);
+    await sendReply(waId, reply);
+    remember(c, { role: 'assistant', content: reply });
+    console.log(`${LOG} ${who(waId)} tapped "Talk to Deepika"${SHARED_NUMBER ? '; bot paused in that chat' : ''}`);
   } catch (err) {
     console.error(`${LOG} could not reply to ${who(waId)}:`, err instanceof Error ? err.message : err);
   }
