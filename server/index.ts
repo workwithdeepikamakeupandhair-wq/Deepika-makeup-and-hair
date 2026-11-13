@@ -1,7 +1,7 @@
 /**
  * DMH API as a normal Node server: local development (`pnpm dev`), `npm start`, or a host like Render.
  * After `npm run build`, the same server also serves the website from dist/.
- * (On Vercel, api/index.ts runs the same app as a function instead.)
+ * (On Vercel, server/api/index.ts runs the same app as a function instead.)
  */
 import './env.js';
 import fs from 'node:fs';

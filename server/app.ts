@@ -1,7 +1,7 @@
 /**
  * The DMH API as an Express app, shared by both ways of running it:
  * - server/index.ts: a normal Node server (local development, `npm start`, Render), which also serves the website;
- * - api/index.ts: a Vercel Function, where Vercel serves the website itself.
+ * - server/api/index.ts: a Vercel Function in the API's own Vercel project (the website is a separate project).
  */
 import './env.js';
 import express, { type Express, type NextFunction, type Request, type Response } from 'express';
@@ -35,7 +35,7 @@ export function createApp({ websiteDir }: AppOptions = {}): Express {
   app.use(express.json({ limit: '20kb' }));
 
   // ---------- API ----------
-  app.get('/api/health', async (_req, res) => {
+  app.get('/api/health', async (req, res) => {
     let database: 'connected' | 'not_configured' | 'error' = 'not_configured';
     if (pool) {
       try {
@@ -52,6 +52,9 @@ export function createApp({ websiteDir }: AppOptions = {}): Express {
       chat: openai ? `openai:${OPENAI_MODEL}` : 'search-only',
       whatsapp: whatsappEnabled ? 'enabled' : 'not_configured',
       metaLeads: metaLeadsStatus,
+      // The caller's own IP as the API sees it. Behind a proxy (the website forwarding /api here) it must still be
+      // the visitor's IP, or the per-visitor rate limits would be shared by everyone.
+      yourIp: req.ip,
     });
   });
 

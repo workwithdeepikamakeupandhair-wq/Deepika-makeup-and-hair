@@ -2,7 +2,7 @@
   "name": "dmh-api",
   "private": true,
   "version": "1.0.0",
-  "description": "DMH API: backend for the Deepika Makeup & Hair website (bookings + AI chat). Uses the project root's node_modules and .env.",
+  "description": "DMH API: backend for the Deepika Makeup & Hair website (bookings + AI chat). Locally it uses the project root's node_modules and .env; the dependencies below are only installed when this folder is deployed on its own (Vercel project with Root Directory = server).",
   "type": "module",
   "scripts": {
     "dev": "node ../node_modules/tsx/dist/cli.mjs watch index.ts",
@@ -10,5 +10,12 @@
     "db:setup": "node ../node_modules/tsx/dist/cli.mjs scripts/setup-db.ts",
     "db:ingest": "node ../node_modules/tsx/dist/cli.mjs scripts/ingest.ts",
     "admin:create": "node ../node_modules/tsx/dist/cli.mjs scripts/create-admin.ts"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^4.3.2",
+    "dotenv": "^17.2.3",
+    "express": "^4.21.2",
+    "openai": "^7.55.0",
+    "pg": "^8.16.0"
   }
 }

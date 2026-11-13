@@ -78,18 +78,22 @@ Deploy to any Node host (Render, Railway, Fly.io, a VPS). Set `DATABASE_URL` (an
 
 ### Vercel
 
-The repo also runs on Vercel as is. Vercel serves the website from `dist/`, and the DMH API runs as a single Vercel
-Function: `api/index.ts` runs the same app as `server/app.ts`. `vercel.json` sends every `/api/*` request to that
-function and every other path to the website, so `/admin` also works when opened directly.
+The website and the API are **two Vercel projects** made from the same GitHub repo:
 
-1. Import the GitHub repo in Vercel. Use the **Vite** framework preset and leave the build settings as they are.
-2. Add the environment variables (Project → Settings → Environment Variables, or "Import .env" when creating the
-   project):
-   - `DATABASE_URL` and `OPENAI_API_KEY`
-   - `SESSION_SECRET`, recommended
-   - the WhatsApp/Meta values, if those webhooks point at the Vercel address
+| Project | Root Directory | Application Preset | Environment variables |
+|---|---|---|---|
+| Website | `./` | Vite | none |
+| DMH API | `server` | Other | `DATABASE_URL`, `OPENAI_API_KEY`, optionally `SESSION_SECRET` and the WhatsApp/Meta values ("Import .env") |
 
-   Redeploy after changing them.
+- **API project:** runs `server/api/index.ts` (the same app as `server/app.ts`) as one Vercel Function, configured by
+  `server/vercel.json`. It installs the dependencies listed in `server/package.json`, and imports a few shared files
+  from `src/data/`. Keep "Include files outside the root directory" switched on in its settings (the default).
+- **Website project:** serves `dist/`. The root `vercel.json` forwards every `/api/*` request to the API project's
+  address, so the browser only ever talks to the website's domain. Login cookies stay first-party, and no CORS is
+  needed. Vercel passes the visitor's IP along, so the per-visitor rate limits still work (`/api/health` shows it as
+  `yourIp`).
+- **Moving the API (e.g. to Render):** change the address in that one rewrite.
+- **Changing environment variables:** redeploy the API project afterwards.
 
 Things that differ from a normal server:
 
@@ -100,8 +104,10 @@ Things that differ from a normal server:
   memory.
 - **Smaller install:** `.npmrc` stops onnxruntime from downloading ~500 MB of GPU libraries on Linux; the model runs on
   the CPU.
-- **Rules for server code:** relative imports in `server/` and `api/` end in `.js`, because Vercel runs these files as
-  plain ES modules. Webhook work that continues after the response goes through `inBackground()` (`server/background.ts`).
+- **Rules for server code:** relative imports in `server/` end in `.js`, because Vercel runs these files as plain ES
+  modules. Webhook work that continues after the response goes through `inBackground()` (`server/background.ts`).
+- **Don't install inside `server/`:** locally, don't run `npm install` there. The server uses the project root's
+  `node_modules`, and a second copy would take ~600 MB.
 
 ## WhatsApp bot
 
