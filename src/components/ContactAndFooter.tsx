@@ -6,8 +6,11 @@
 import React, { useState } from 'react';
 import { Phone, MapPin, Instagram, Mail, Clock, ArrowUpRight, CheckCircle2 } from 'lucide-react';
 import { BUSINESS_INFO, WHATSAPP_CONTACTS } from '../data/portfolioData';
-import { BRIDAL_INQUIRY_EMAIL } from '../data/inquiryEmail';
+import { BRIDAL_INQUIRY, EmailDraft, emailLinks } from '../data/inquiryEmail';
+import { EmailChooser, chooserOnComputers } from './EmailChooser';
 import { WhatsAppIcon } from './WhatsAppIcon';
+
+const INQUIRY_MAILTO = emailLinks(BRIDAL_INQUIRY).mailto;
 
 interface ContactAndFooterProps {
   onOpenBooking: () => void;
@@ -18,6 +21,7 @@ export const ContactAndFooter: React.FC<ContactAndFooterProps> = ({ onOpenBookin
   const [phone, setPhone] = useState('');
   const [message, setMessage] = useState('');
   const [sent, setSent] = useState(false);
+  const [emailChooser, setEmailChooser] = useState<EmailDraft | null>(null);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -76,7 +80,8 @@ export const ContactAndFooter: React.FC<ContactAndFooterProps> = ({ onOpenBookin
 
               {/* Opens a pre-written bridal inquiry email (same as the /bridal-inquiry page) */}
               <a
-                href={BRIDAL_INQUIRY_EMAIL.mailto}
+                href={INQUIRY_MAILTO}
+                onClick={chooserOnComputers(() => setEmailChooser(BRIDAL_INQUIRY))}
                 className="sm:col-span-2 p-4 rounded-xl bg-[#2A221E] border border-[#453830] hover:border-[#C5A880] transition-colors flex items-center gap-3.5 group"
               >
                 <div className="w-10 h-10 rounded-full bg-[#C5A880] text-[#1D1714] flex items-center justify-center shrink-0">
@@ -246,6 +251,8 @@ export const ContactAndFooter: React.FC<ContactAndFooterProps> = ({ onOpenBookin
           </div>
         </div>
       </div>
+
+      <EmailChooser draft={emailChooser} onClose={() => setEmailChooser(null)} />
     </footer>
   );
 };

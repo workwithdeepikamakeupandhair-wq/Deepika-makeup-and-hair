@@ -6,7 +6,8 @@
 import React, { useEffect, useState } from 'react';
 import { X, Phone, CheckCircle2, Sparkles, Mail } from 'lucide-react';
 import { getAttribution } from '../attribution';
-import { emailLinks } from '../data/inquiryEmail';
+import { EmailDraft, emailLinks, isPhoneOrTablet } from '../data/inquiryEmail';
+import { EmailChooser } from './EmailChooser';
 import { BUSINESS_INFO, LookArchiveItem, ServiceItem, WHATSAPP_CONTACTS } from '../data/portfolioData';
 import { WhatsAppIcon } from './WhatsAppIcon';
 
@@ -30,11 +31,15 @@ export const BookingModal: React.FC<BookingModalProps> = ({
     preselectedService?.title ||
     (preselectedLook ? `Look: ${preselectedLook.title}` : 'Bridal Makeup & Hair');
   const [service, setService] = useState(chosenService);
+  // Computers only: the "Send your email with…" chooser (see EmailChooser)
+  const [emailChooser, setEmailChooser] = useState<EmailDraft | null>(null);
 
   // The modal stays mounted between openings, so pick up the service / look chosen for this opening
   // (otherwise every "Book" button would keep whatever was chosen the first time).
   useEffect(() => {
-    if (isOpen) setService(chosenService());
+    if (!isOpen) return;
+    setService(chosenService());
+    setEmailChooser(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, preselectedService, preselectedLook]);
   const [eventDate, setEventDate] = useState('');
@@ -63,27 +68,35 @@ export const BookingModal: React.FC<BookingModalProps> = ({
     setSubmitted(true);
   };
 
-  // Opens the visitor's mail app with an email to Deepika holding the form's answers. Fields left empty stay
-  // as blank lines, so they can still be filled in inside the email before sending.
+  // An email to Deepika holding the form's answers. Fields left empty stay as blank lines, so they can still be
+  // filled in inside the email before sending.
   const handleEmailSend = () => {
-    const body = [
-      `Hi ${BUSINESS_INFO.artist.split(' ')[0]},`,
-      '',
-      'I would like to inquire about booking makeup & hair services with you:',
-      '',
-      `Full name: ${fullName}`,
-      `Phone / WhatsApp: ${phone}`,
-      ...(email ? [`Email: ${email}`] : []),
-      `Service: ${service}`,
-      `Event date: ${eventDate}`,
-      `Location (full address): ${eventLocation}`,
-      `Party size: ${guestCount}`,
-      `Notes: ${notes}`,
-      '',
-      'Please let me know your availability and pricing. Thank you!',
-    ].join('\n');
-    window.location.href = emailLinks(`Booking Inquiry: ${service} | ${BUSINESS_INFO.name}`, body).mailto;
-    setSubmitted(true);
+    const draft: EmailDraft = {
+      subject: `Booking Inquiry: ${service} | ${BUSINESS_INFO.name}`,
+      body: [
+        `Hi ${BUSINESS_INFO.artist.split(' ')[0]},`,
+        '',
+        'I would like to inquire about booking makeup & hair services with you:',
+        '',
+        `Full name: ${fullName}`,
+        `Phone / WhatsApp: ${phone}`,
+        ...(email ? [`Email: ${email}`] : []),
+        `Service: ${service}`,
+        `Event date: ${eventDate}`,
+        `Location (full address): ${eventLocation}`,
+        `Party size: ${guestCount}`,
+        `Notes: ${notes}`,
+        '',
+        'Please let me know your availability and pricing. Thank you!',
+      ].join('\n'),
+    };
+    if (isPhoneOrTablet()) {
+      window.location.href = emailLinks(draft).mailto;
+      setSubmitted(true);
+    } else {
+      // Computers usually have no mail app for mailto: links: let the visitor pick Gmail, Outlook, etc.
+      setEmailChooser(draft);
+    }
   };
 
   const handleDirectSubmit = async (e: React.FormEvent) => {
@@ -372,6 +385,12 @@ export const BookingModal: React.FC<BookingModalProps> = ({
           )}
         </div>
       </div>
+
+      <EmailChooser
+        draft={emailChooser}
+        onClose={() => setEmailChooser(null)}
+        onChosen={() => setSubmitted(true)}
+      />
     </div>
   );
 };

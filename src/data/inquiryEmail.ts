@@ -4,7 +4,10 @@
  */
 import { BUSINESS_INFO } from './portfolioData';
 
-export const INQUIRY_SUBJECT = 'Bridal Inquiry | Deepika Makeup & Hair';
+export interface EmailDraft {
+  subject: string;
+  body: string;
+}
 
 /** What we ask every bride for. The labels become the blank lines of the email template. */
 export const INQUIRY_FIELDS = [
@@ -18,28 +21,43 @@ export const INQUIRY_FIELDS = [
   'Anything else (outfit colors, look inspiration, ready-by time)',
 ];
 
-/** The blank template: a greeting, one "Label: " line per field, a sign-off. */
-export function inquiryTemplate(): string {
-  return [
+/** The blank bridal inquiry: a greeting, one "Label: " line per field, a sign-off. */
+export const BRIDAL_INQUIRY: EmailDraft = {
+  subject: 'Bridal Inquiry | Deepika Makeup & Hair',
+  body: [
     `Hi ${BUSINESS_INFO.artist.split(' ')[0]},`,
     '',
     'I would love to book you for my wedding! Here are my details. Please let me know your availability and pricing.',
     '',
     ...INQUIRY_FIELDS.flatMap((label) => [`${label}: `, '']),
     'Thank you!',
-  ].join('\n');
-}
+  ].join('\n'),
+};
 
-/** Links that open a new mail to Deepika: `mailto` for the phone's mail app, `gmail` for Gmail in a browser. */
-export function emailLinks(subject: string, body: string) {
+/** Links that open a new email to Deepika: the device's mail app (`mailto`) or a webmail compose screen. */
+export function emailLinks({ subject, body }: EmailDraft) {
   const enc = encodeURIComponent;
-  // Mail links should use CRLF line breaks (RFC 6068); some mail apps join lines otherwise.
-  const mailBody = body.replace(/\r?\n/g, '\r\n');
+  const to = enc(BUSINESS_INFO.email);
   return {
-    mailto: `mailto:${BUSINESS_INFO.email}?subject=${enc(subject)}&body=${enc(mailBody)}`,
-    gmail: `https://mail.google.com/mail/?view=cm&fs=1&to=${enc(BUSINESS_INFO.email)}&su=${enc(subject)}&body=${enc(body)}`,
+    // Mail links should use CRLF line breaks (RFC 6068); some mail apps join lines otherwise.
+    mailto: `mailto:${BUSINESS_INFO.email}?subject=${enc(subject)}&body=${enc(body.replace(/\r?\n/g, '\r\n'))}`,
+    gmail: `https://mail.google.com/mail/?view=cm&fs=1&to=${to}&su=${enc(subject)}&body=${enc(body)}`,
+    outlook: `https://outlook.live.com/mail/0/deeplink/compose?to=${to}&subject=${enc(subject)}&body=${enc(body)}`,
+    yahoo: `https://compose.mail.yahoo.com/?to=${to}&subject=${enc(subject)}&body=${enc(body)}`,
   };
 }
 
-/** The blank bridal inquiry, ready to link to. */
-export const BRIDAL_INQUIRY_EMAIL = emailLinks(INQUIRY_SUBJECT, inquiryTemplate());
+/** The whole email as plain text, for pasting into any mail app. */
+export function draftAsText({ subject, body }: EmailDraft): string {
+  return `To: ${BUSINESS_INFO.email}\nSubject: ${subject}\n\n${body}`;
+}
+
+/**
+ * Phones and tablets always have a mail app, so a `mailto:` link opens it straight away. Most computers have no
+ * mail app set up and the click silently does nothing, so there we offer webmail choices instead.
+ */
+export function isPhoneOrTablet(): boolean {
+  const ua = navigator.userAgent;
+  // iPads report a Mac user agent; touch support gives them away
+  return /Android|iPhone|iPad|iPod|Mobile/i.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
+}

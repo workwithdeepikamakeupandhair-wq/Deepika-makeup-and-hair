@@ -10,31 +10,12 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Mail, Copy, Check, Instagram, ArrowUpRight } from 'lucide-react';
 import { BUSINESS_INFO, WHATSAPP_CONTACTS } from '../data/portfolioData';
-import { BRIDAL_INQUIRY_EMAIL, INQUIRY_FIELDS } from '../data/inquiryEmail';
+import { BRIDAL_INQUIRY, EmailDraft, INQUIRY_FIELDS, emailLinks } from '../data/inquiryEmail';
+import { copyText } from '../clipboard';
+import { EmailChooser, chooserOnComputers } from './EmailChooser';
 import { WhatsAppIcon } from './WhatsAppIcon';
 
-async function copyText(text: string): Promise<boolean> {
-  try {
-    await navigator.clipboard.writeText(text);
-    return true;
-  } catch {
-    // In-app browsers (Instagram, Facebook) can block the Clipboard API: fall back to a hidden text field
-    try {
-      const field = document.createElement('textarea');
-      field.value = text;
-      field.setAttribute('readonly', '');
-      field.style.position = 'fixed';
-      field.style.opacity = '0';
-      document.body.appendChild(field);
-      field.select();
-      const ok = document.execCommand('copy');
-      field.remove();
-      return ok;
-    } catch {
-      return false;
-    }
-  }
-}
+const INQUIRY_LINKS = emailLinks(BRIDAL_INQUIRY);
 
 /** "Location (full address of …)" → ["Location", "full address of …"] */
 function splitField(field: string): [string, string | null] {
@@ -46,6 +27,7 @@ const STEPS = ['Tap the button', 'Fill in your details', 'Press send'];
 
 export default function BridalInquiryPage() {
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle');
+  const [chooser, setChooser] = useState<EmailDraft | null>(null);
   const resetTimer = useRef<number | undefined>(undefined);
 
   useEffect(() => {
@@ -115,7 +97,8 @@ export default function BridalInquiryPage() {
 
           <div className="space-y-2.5">
             <a
-              href={BRIDAL_INQUIRY_EMAIL.mailto}
+              href={INQUIRY_LINKS.mailto}
+              onClick={chooserOnComputers(() => setChooser(BRIDAL_INQUIRY))}
               className="btn-gold w-full py-4 rounded-full text-sm uppercase tracking-[0.16em] font-medium flex items-center justify-center gap-2.5 shadow-md"
             >
               <Mail className="w-5 h-5" />
@@ -149,7 +132,7 @@ export default function BridalInquiryPage() {
             <p className="text-xs text-center text-[#6A5F56]">Mail app didn't open?</p>
             <div className="grid grid-cols-2 gap-3">
               <a
-                href={BRIDAL_INQUIRY_EMAIL.gmail}
+                href={INQUIRY_LINKS.gmail}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="py-3 rounded-full border border-[#D9D0C5] bg-white text-xs uppercase tracking-[0.12em] font-medium flex items-center justify-center gap-1.5 hover:border-[#1D1714] transition-colors"
@@ -205,6 +188,8 @@ export default function BridalInquiryPage() {
           </footer>
         </div>
       </main>
+
+      <EmailChooser draft={chooser} onClose={() => setChooser(null)} />
     </div>
   );
 }
