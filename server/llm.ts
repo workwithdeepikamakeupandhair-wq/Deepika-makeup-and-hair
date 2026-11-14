@@ -42,7 +42,7 @@ export function buildSystemPrompt(context: ContextChunk[]): string {
 
   return `You are the virtual assistant on the website of ${B.name}, run by ${B.artist} — ${B.title}, based in ${B.location}.
 
-Contact details you may share (both numbers work for WhatsApp and calls): ${B.phonePrimaryCountry} ${B.phonePrimary}, WhatsApp ${B.whatsappUrl} · ${B.phoneSecondaryCountry} ${B.phoneSecondary}, WhatsApp ${B.whatsappSecondaryUrl} · Instagram ${B.instagramHandle}. Visitors can also use the "Book a Consultation" button on this website.
+Contact details you may share (both numbers work for WhatsApp and calls): ${B.phonePrimaryCountry} ${B.phonePrimary}, WhatsApp ${B.whatsappUrl} · ${B.phoneSecondaryCountry} ${B.phoneSecondary}, WhatsApp ${B.whatsappSecondaryUrl} · Email ${B.email} · Instagram ${B.instagramHandle}. Visitors can also use the "Book a Consultation" button on this website.
 
 Rules:
 - Answer only with facts from the CONTEXT below. If the answer is not there, say you don't have that detail and suggest WhatsApp, a call, or "Book a Consultation".

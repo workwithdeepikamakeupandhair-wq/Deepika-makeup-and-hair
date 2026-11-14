@@ -48,7 +48,7 @@ export const FAQ: { q: string; a: string }[] = [
   },
   {
     q: 'What is your phone number, WhatsApp or Instagram? How do I contact you?',
-    a: `Both numbers work for WhatsApp and calls: ${B.phonePrimaryCountry} ${B.phonePrimary} (WhatsApp ${B.whatsappUrl}) and ${B.phoneSecondaryCountry} ${B.phoneSecondary} (WhatsApp ${B.whatsappSecondaryUrl}). Instagram: ${B.instagramHandle} (${B.instagram}).`,
+    a: `Both numbers work for WhatsApp and calls: ${B.phonePrimaryCountry} ${B.phonePrimary} (WhatsApp ${B.whatsappUrl}) and ${B.phoneSecondaryCountry} ${B.phoneSecondary} (WhatsApp ${B.whatsappSecondaryUrl}). Email: ${B.email}. Instagram: ${B.instagramHandle} (${B.instagram}).`,
   },
   {
     q: 'Is the makeup course certificate recognized internationally? Is the certification valid abroad or in other countries?',
@@ -156,7 +156,7 @@ export function businessFacts(): string {
   return [
     `Business: ${B.name}, run by ${B.artist} (${B.title}). Based in ${B.location}. ${B.serviceArea}.`,
     `About: ${B.bio}`,
-    `Phone and WhatsApp: ${B.phonePrimaryCountry} ${B.phonePrimary} (main), ${B.phoneSecondaryCountry} ${B.phoneSecondary}. Instagram: ${B.instagramHandle} (${B.instagram}).`,
+    `Phone and WhatsApp: ${B.phonePrimaryCountry} ${B.phonePrimary} (main), ${B.phoneSecondaryCountry} ${B.phoneSecondary}. Email: ${B.email}. Instagram: ${B.instagramHandle} (${B.instagram}).`,
     `Certification: ${B.certification}. It is awarded with the Pro Makeup & Hair Course.`,
     `Pricing: every booking is quoted individually based on the services, event date, location and number of people. There is no published price list.`,
     `Booking: customers send a booking request; ${B.artist} reviews requests within 24 hours and confirms availability and the quote personally.`,

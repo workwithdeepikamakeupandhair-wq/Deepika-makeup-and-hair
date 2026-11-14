@@ -6,6 +6,7 @@
 import React, { useState } from 'react';
 import { Phone, MapPin, Instagram, Mail, Clock, ArrowUpRight, CheckCircle2 } from 'lucide-react';
 import { BUSINESS_INFO, WHATSAPP_CONTACTS } from '../data/portfolioData';
+import { BRIDAL_INQUIRY_EMAIL } from '../data/inquiryEmail';
 import { WhatsAppIcon } from './WhatsAppIcon';
 
 interface ContactAndFooterProps {
@@ -72,6 +73,24 @@ export const ContactAndFooter: React.FC<ContactAndFooterProps> = ({ onOpenBookin
                   </div>
                 </a>
               ))}
+
+              {/* Opens a pre-written bridal inquiry email (same as the /bridal-inquiry page) */}
+              <a
+                href={BRIDAL_INQUIRY_EMAIL.mailto}
+                className="sm:col-span-2 p-4 rounded-xl bg-[#2A221E] border border-[#453830] hover:border-[#C5A880] transition-colors flex items-center gap-3.5 group"
+              >
+                <div className="w-10 h-10 rounded-full bg-[#C5A880] text-[#1D1714] flex items-center justify-center shrink-0">
+                  <Mail className="w-5 h-5" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-[10px] uppercase font-sans tracking-wider text-[#A89F93]">
+                    Email · Bridal inquiry, ready to send
+                  </p>
+                  <p className="text-xs font-semibold text-white group-hover:text-[#C5A880] transition-colors break-all">
+                    {BUSINESS_INFO.email}
+                  </p>
+                </div>
+              </a>
             </div>
 
             <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[#A89F93]">

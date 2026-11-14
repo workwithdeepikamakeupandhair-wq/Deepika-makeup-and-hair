@@ -80,6 +80,8 @@ export const BUSINESS_INFO = {
   // WhatsApp links need the full international number (country code, no +)
   whatsappUrl: "https://wa.me/19804977720",
   whatsappSecondaryUrl: "https://wa.me/919113585961",
+  // Bridal inquiries by email land here (the /bridal-inquiry page and every "Email" button open a pre-written mail to it)
+  email: "workwithdeepikamakeupandhair@gmail.com",
   certification: "Certification valid in 180 countries",
   bio: "Deepika S is an Atlanta-based professional makeup artist and educator specializing in bespoke Indian bridal artistry, contemporary reception glamour, party makeup and hair for all kinds of celebrations, and personalized makeup masterclasses. Renowned for weightless glass-skin bases, customized undertone matching, and intricate hair styling, she brings timeless elegance to every bride and client.",
 };

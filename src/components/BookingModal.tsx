@@ -4,8 +4,9 @@
  */
 
 import React, { useEffect, useState } from 'react';
-import { X, Phone, CheckCircle2, Sparkles } from 'lucide-react';
+import { X, Phone, CheckCircle2, Sparkles, Mail } from 'lucide-react';
 import { getAttribution } from '../attribution';
+import { emailLinks } from '../data/inquiryEmail';
 import { BUSINESS_INFO, LookArchiveItem, ServiceItem, WHATSAPP_CONTACTS } from '../data/portfolioData';
 import { WhatsAppIcon } from './WhatsAppIcon';
 
@@ -59,6 +60,29 @@ export const BookingModal: React.FC<BookingModalProps> = ({
       `Please let me know your availability and bridal package details. Thank you!`
     );
     window.open(`${BUSINESS_INFO.whatsappUrl}?text=${text}`, '_blank');
+    setSubmitted(true);
+  };
+
+  // Opens the visitor's mail app with an email to Deepika holding the form's answers. Fields left empty stay
+  // as blank lines, so they can still be filled in inside the email before sending.
+  const handleEmailSend = () => {
+    const body = [
+      `Hi ${BUSINESS_INFO.artist.split(' ')[0]},`,
+      '',
+      'I would like to inquire about booking makeup & hair services with you:',
+      '',
+      `Full name: ${fullName}`,
+      `Phone / WhatsApp: ${phone}`,
+      ...(email ? [`Email: ${email}`] : []),
+      `Service: ${service}`,
+      `Event date: ${eventDate}`,
+      `Location (full address): ${eventLocation}`,
+      `Party size: ${guestCount}`,
+      `Notes: ${notes}`,
+      '',
+      'Please let me know your availability and pricing. Thank you!',
+    ].join('\n');
+    window.location.href = emailLinks(`Booking Inquiry: ${service} | ${BUSINESS_INFO.name}`, body).mailto;
     setSubmitted(true);
   };
 
@@ -313,6 +337,15 @@ export const BookingModal: React.FC<BookingModalProps> = ({
                 >
                   <WhatsAppIcon className="w-4 h-4" />
                   <span>Send via WhatsApp (Instant Connect)</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleEmailSend}
+                  className="w-full py-3 rounded-full text-xs uppercase tracking-[0.14em] font-sans font-medium bg-white border border-[#D9D0C5] text-[#1D1714] hover:border-[#1D1714] transition-colors flex items-center justify-center gap-2"
+                >
+                  <Mail className="w-4 h-4" />
+                  <span>Send via Email</span>
                 </button>
 
                 <button
