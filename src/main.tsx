@@ -2,6 +2,7 @@ import { lazy, Suspense } from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App.tsx';
 import BridalInquiryPage from './components/BridalInquiryPage';
+import PricesPage from './components/PricesPage';
 import { captureAttribution } from './attribution';
 import './index.css';
 
@@ -11,6 +12,8 @@ const path = window.location.pathname;
 const isAdmin = /^\/admin(\/|$)/.test(path);
 // The Instagram-bio link: a one-page "email your inquiry" screen (see BridalInquiryPage)
 const isBridalInquiry = /^\/bridal-inquiry\/?$/i.test(path);
+// The full price list: Deepika's and the senior artist's packages (see PricesPage)
+const isPrices = /^\/prices\/?$/i.test(path);
 
 if (!isAdmin) captureAttribution();
 
@@ -21,6 +24,8 @@ createRoot(document.getElementById('root')!).render(
     </Suspense>
   ) : isBridalInquiry ? (
     <BridalInquiryPage />
+  ) : isPrices ? (
+    <PricesPage />
   ) : (
     <App />
   ),

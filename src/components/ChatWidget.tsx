@@ -23,7 +23,7 @@ const GREETING: ChatMessage = {
 
 const SUGGESTIONS = [
   "What's included in the bridal package?",
-  'Do you travel for destination weddings?',
+  'How much is airbrush bridal makeup?',
   'Do you offer makeup classes?',
   'How do I book a date?',
 ];

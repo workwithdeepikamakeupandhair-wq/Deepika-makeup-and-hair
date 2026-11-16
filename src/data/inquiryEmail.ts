@@ -3,6 +3,7 @@
  * subject and a fill-in-the-blanks message already in place, so all she has to do is add her details and send.
  */
 import { BUSINESS_INFO } from './portfolioData';
+import { BOOKING_SERVICES, GENERAL_QUESTIONS, lookFromService } from './bookingServices';
 
 export interface EmailDraft {
   subject: string;
@@ -16,7 +17,7 @@ export const INQUIRY_FIELDS = [
   'Wedding date',
   'Other events & dates (Engagement, Sangeet, Mehendi, Reception)',
   'Location (full address of the venue or getting-ready place)',
-  'Services wanted (makeup, hair, saree draping)',
+  'Bridal package (HD $550, Advanced $600 or Airbrush $650)',
   'Number of people getting ready (bride + family / bridesmaids)',
   'Anything else (outfit colors, look inspiration, ready-by time)',
 ];
@@ -27,12 +28,36 @@ export const BRIDAL_INQUIRY: EmailDraft = {
   body: [
     `Hi ${BUSINESS_INFO.artist.split(' ')[0]},`,
     '',
-    'I would love to book you for my wedding! Here are my details. Please let me know your availability and pricing.',
+    'I would love to book you for my wedding! Here are my details. Please let me know your availability.',
     '',
     ...INQUIRY_FIELDS.flatMap((label) => [`${label}: `, '']),
     'Thank you!',
   ].join('\n'),
 };
+
+/**
+ * The email for one service picked in the booking window: a greeting, what she'd like to book, blank lines for
+ * her name, phone and that service's questions (see BOOKING_SERVICES), a sign-off.
+ */
+export function serviceInquiryEmail(service: string): EmailDraft {
+  const known = BOOKING_SERVICES.find((s) => s.value === service);
+  const look = lookFromService(service);
+  const intro =
+    known?.intro ??
+    (look ? `I love the "${look}" look on your website and would like to book it.` : `I would like to book ${service}.`);
+  const fields = ['Full name', 'Phone / WhatsApp number', ...(known?.questions ?? GENERAL_QUESTIONS), 'Anything else / questions'];
+  return {
+    subject: `${look ? `"${look}" Look` : service} Inquiry | ${BUSINESS_INFO.name}`,
+    body: [
+      `Hi ${BUSINESS_INFO.artist.split(' ')[0]},`,
+      '',
+      `${intro} Here are my details. Please let me know your availability.`,
+      '',
+      ...fields.flatMap((label) => [`${label}: `, '']),
+      'Thank you!',
+    ].join('\n'),
+  };
+}
 
 /** Links that open a new email to Deepika: the device's mail app (`mailto`) or a webmail compose screen. */
 export function emailLinks({ subject, body }: EmailDraft) {

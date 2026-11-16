@@ -42,6 +42,9 @@ const DEG = Math.PI / 180;
  */
 const CAN_HOVER = typeof window !== 'undefined' && window.matchMedia('(hover: hover)').matches;
 
+/** "01" … "12": a look's position in the gallery */
+const lookNumber = (index: number) => String(index + 1).padStart(2, '0');
+
 /** Staggered entrance delay for the detail panel's blocks. */
 const stagger = (i: number): React.CSSProperties => ({ animationDelay: `${140 + i * 60}ms` });
 
@@ -536,43 +539,17 @@ export const CurvedArchiveGallery: React.FC<CurvedArchiveGalleryProps> = ({
       onKeyDown={handleKeyDown}
       aria-label="Interactive 3D Curved Makeup Archive Gallery"
     >
-      {/* Background Halftone Kanji / Editorial Typography inspired by reference */}
-      <div className="absolute left-[3vw] top-[14vh] z-0 select-none pointer-events-none opacity-25 hidden md:block">
-        <span
-          className="font-serif text-[clamp(4rem,10vw,9rem)] leading-none font-bold text-transparent tracking-widest"
-          style={{
-            WebkitTextStroke: '1px #C5A880',
-            writingMode: 'vertical-rl'
-          }}
-        >
-          美の記憶
-        </span>
-      </div>
-
-      <div className="absolute right-[3vw] top-[10vh] z-0 select-none pointer-events-none opacity-20 hidden md:block">
-        <span
-          className="font-serif text-[clamp(4rem,10vw,9rem)] leading-none font-bold text-transparent tracking-widest"
-          style={{
-            WebkitTextStroke: '1px #9E7D53',
-            writingMode: 'vertical-rl'
-          }}
-        >
-          華麗
-        </span>
-      </div>
-
       {/* Header Info */}
       <div className="max-w-7xl mx-auto px-5 sm:px-8 text-center space-y-3 relative z-10">
         <div className="inline-flex items-center gap-2 text-xs font-sans tracking-[0.2em] uppercase text-[#9E7D53]">
           <Sparkles className="w-3.5 h-3.5" />
-          <span>Curved 3D Archive Gallery · 12 Signature Works</span>
+          <span>Look Gallery · {ARCHIVE_LOOKS.length} Signature Looks</span>
         </div>
         <h2 className="font-serif text-3xl sm:text-4xl lg:text-5xl text-[#1D1714]">
           The Archive of Bridal Radiance
         </h2>
         <p className="text-xs sm:text-sm text-[#6A5F56] max-w-xl mx-auto font-sans">
-          Curated transformations standing along a receding 3D arc.
-          Drag or swipe to rotate the shelf, or click the active front portrait to inspect technique details.
+          Real looks by {BUSINESS_INFO.artist}. Drag or swipe to rotate the shelf, and tap the front photo to open it.
         </p>
       </div>
 
@@ -616,7 +593,7 @@ export const CurvedArchiveGallery: React.FC<CurvedArchiveGalleryProps> = ({
           ref={stageRef}
           className="absolute left-1/2 top-[var(--stage-cy)] w-0 h-0 preserve-3d"
         >
-          {virtualTapes.map(({ v, look }) => (
+          {virtualTapes.map(({ v, look, originalIndex }) => (
             <div
               key={v}
               id={`tape-${v}`}
@@ -645,7 +622,7 @@ export const CurvedArchiveGallery: React.FC<CurvedArchiveGalleryProps> = ({
                 <div className="relative z-1 text-center space-y-1">
                   <div className="w-5 h-5 mx-auto rounded-full bg-[#C5A880]/30 border border-[#C5A880] flex items-center justify-center">
                     <span className="text-[9px] font-sans font-bold text-[#1D1714]">
-                      {look.year.toString().slice(2)}
+                      {lookNumber(originalIndex)}
                     </span>
                   </div>
                   <div className="h-6 w-full overflow-hidden rounded-[1px]">
@@ -673,7 +650,7 @@ export const CurvedArchiveGallery: React.FC<CurvedArchiveGalleryProps> = ({
 
                 <div className="relative z-1 text-center pt-1 border-t border-[#D9D0C5]/80">
                   <span className="text-[9px] font-sans tracking-[0.15em] text-[#9E7D53] font-bold">
-                    VASARI
+                    DMH
                   </span>
                 </div>
               </div>
@@ -713,21 +690,15 @@ export const CurvedArchiveGallery: React.FC<CurvedArchiveGalleryProps> = ({
                   <div className="relative z-10 flex items-center justify-between text-[8px] font-sans uppercase tracking-[0.18em] text-[#FAF7F2]/90">
                     <span>Deepika S</span>
                     <span className="px-1.5 py-0.5 border border-[#C5A880] text-[#C5A880] rounded-[2px]">
-                      {look.year}
+                      Look {lookNumber(originalIndex)}
                     </span>
                   </div>
 
                   {/* Bottom title info */}
-                  <div className="relative z-10 space-y-1">
-                    <p className="text-[9px] tracking-[0.2em] uppercase font-sans text-[#C5A880]">
-                      {look.genre}
-                    </p>
+                  <div className="relative z-10">
                     <h3 className="font-serif text-lg leading-tight text-white font-medium">
                       {look.title}
                     </h3>
-                    <p className="text-[8px] text-white/70 line-clamp-2 font-sans font-light">
-                      {look.skinFinish}
-                    </p>
                   </div>
                 </div>
 
@@ -788,7 +759,7 @@ export const CurvedArchiveGallery: React.FC<CurvedArchiveGalleryProps> = ({
               style={stagger(1)}
               className="archive-detail-in mt-6 lg:mt-8 text-[11px] font-sans font-semibold uppercase tracking-[0.22em] text-[#9E7D53]"
             >
-              {detailLook.kanjiSubtitle}
+              Look {lookNumber(ARCHIVE_LOOKS.indexOf(detailLook))} of {ARCHIVE_LOOKS.length}
             </p>
 
             <h3
@@ -800,45 +771,12 @@ export const CurvedArchiveGallery: React.FC<CurvedArchiveGalleryProps> = ({
 
             <p
               style={stagger(3)}
-              className="archive-detail-in mt-4 text-[11px] font-sans uppercase tracking-[0.18em] text-[#6A5F56]"
+              className="archive-detail-in mt-5 font-serif italic text-base text-[#6A5F56]"
             >
-              {detailLook.year} / {detailLook.genre} / {detailLook.durationMin} min
+              Makeup &amp; hair by {BUSINESS_INFO.artist}
             </p>
 
-            <p
-              style={stagger(4)}
-              className="archive-detail-in mt-5 max-w-md text-sm leading-relaxed text-[#3A302A] font-sans"
-            >
-              {detailLook.synopsis}
-            </p>
-
-            <p
-              style={stagger(5)}
-              className="archive-detail-in mt-3 font-serif italic text-base text-[#6A5F56]"
-            >
-              Makeup &amp; hair by {BUSINESS_INFO.artist} · {detailLook.occasion}
-            </p>
-
-            <dl
-              style={stagger(6)}
-              className="archive-detail-in mt-6 grid grid-cols-2 gap-x-6 gap-y-3 border-t border-[#E7DFD6] pt-4 max-w-md"
-            >
-              {[
-                ['Complexion', detailLook.skinFinish],
-                ['Eyes', detailLook.eyesTechnique],
-                ['Lips', detailLook.lipShade],
-                ['Hair', detailLook.hairStyle],
-              ].map(([label, value]) => (
-                <div key={label}>
-                  <dt className="text-[10px] font-sans font-semibold uppercase tracking-[0.16em] text-[#9E7D53]">
-                    {label}
-                  </dt>
-                  <dd className="mt-0.5 text-xs leading-snug text-[#1D1714] font-sans">{value}</dd>
-                </div>
-              ))}
-            </dl>
-
-            <div style={stagger(7)} className="archive-detail-in mt-6 flex items-center gap-3 max-w-md">
+            <div style={stagger(4)} className="archive-detail-in mt-6 flex items-center gap-3 max-w-md">
               <button
                 onClick={() => {
                   if (onSelectLookForBooking) onSelectLookForBooking(detailLook);
@@ -858,16 +796,6 @@ export const CurvedArchiveGallery: React.FC<CurvedArchiveGalleryProps> = ({
                   className={`w-4 h-4 ${likedLooks[detailLook.id] ? 'fill-[#C5A880] text-[#C5A880]' : ''}`}
                 />
               </button>
-              <div className="ml-auto flex items-center gap-1" aria-label="Tone palette">
-                {detailLook.palette.map((color, i) => (
-                  <span
-                    key={`${color}-${i}`}
-                    title={color}
-                    className="w-3.5 h-3.5 rounded-full border border-black/10"
-                    style={{ backgroundColor: color }}
-                  />
-                ))}
-              </div>
             </div>
           </div>
         </div>
@@ -898,19 +826,11 @@ export const CurvedArchiveGallery: React.FC<CurvedArchiveGalleryProps> = ({
               {currentLook.title}
             </h3>
 
-            <div className="flex items-center justify-center gap-2 text-xs font-sans tracking-[0.18em] uppercase text-[#9E7D53]">
-              <span>{currentLook.subtitle}</span>
-            </div>
-
             <div className="w-8 h-[1px] bg-[#C5A880] mx-auto" />
 
-            <div className="flex items-center justify-center gap-3 text-xs text-[#6A5F56] font-sans">
-              <span className="font-medium text-[#1D1714]">{currentLook.year}</span>
-              <span>—</span>
-              <span>{currentLook.genre}</span>
-              <span>—</span>
-              <span className="italic">{currentLook.occasion}</span>
-            </div>
+            <p className="text-xs font-sans tracking-[0.18em] uppercase text-[#9E7D53]">
+              Look {lookNumber(activeLookIndex)} of {ARCHIVE_LOOKS.length}
+            </p>
           </div>
 
           {/* Right Arrow Button */}
@@ -929,7 +849,7 @@ export const CurvedArchiveGallery: React.FC<CurvedArchiveGalleryProps> = ({
             onClick={() => openDetail(stateRef.current.T)}
             className="btn-gold px-6 py-2.5 rounded-full text-xs uppercase tracking-[0.15em] font-sans font-medium inline-flex items-center gap-2"
           >
-            <span>Inspect Look Breakdown</span>
+            <span>Open Look</span>
             <Sparkles className="w-3.5 h-3.5" />
           </button>
         </div>

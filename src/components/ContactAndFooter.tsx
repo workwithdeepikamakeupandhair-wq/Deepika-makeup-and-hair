@@ -112,11 +112,11 @@ export const ContactAndFooter: React.FC<ContactAndFooterProps> = ({ onOpenBookin
             <div className="pt-4 border-t border-[#3A322C] space-y-2.5 text-xs text-[#A89F93]">
               <div className="flex items-center gap-2.5">
                 <MapPin className="w-4 h-4 text-[#C5A880] shrink-0" />
-                <span>Atlanta, Georgia, USA · Available for travel worldwide</span>
+                <span>Atlanta, Georgia, USA · Travel charges based on location</span>
               </div>
               <div className="flex items-center gap-2.5">
                 <Clock className="w-4 h-4 text-[#C5A880] shrink-0" />
-                <span>Consultations by appointment only · 7 Days a week</span>
+                <span>Your date is confirmed after the advance payment</span>
               </div>
               <div className="flex items-center gap-2.5">
                 <Instagram className="w-4 h-4 text-[#C5A880] shrink-0" />
@@ -226,7 +226,7 @@ export const ContactAndFooter: React.FC<ContactAndFooterProps> = ({ onOpenBookin
             <span>© {new Date().getFullYear()} All Rights Reserved.</span>
           </div>
 
-          <div className="flex items-center gap-6">
+          <div className="flex flex-wrap items-center justify-center gap-x-6 gap-y-2">
             <a href="#archive-gallery" className="hover:text-white transition-colors">
               3D Archive
             </a>
@@ -235,6 +235,9 @@ export const ContactAndFooter: React.FC<ContactAndFooterProps> = ({ onOpenBookin
             </a>
             <a href="#services" className="hover:text-white transition-colors">
               Services
+            </a>
+            <a href="/prices" className="hover:text-white transition-colors">
+              Prices
             </a>
             <a href="#masterclass" className="hover:text-white transition-colors">
               Masterclass

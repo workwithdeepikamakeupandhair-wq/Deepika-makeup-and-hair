@@ -3,9 +3,8 @@
  * owner editable in place. Refreshes itself every minute so new ad leads appear without reloading.
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ExternalLink, Inbox, LogOut, Phone, RefreshCw, Search } from 'lucide-react';
+import { Inbox, Phone, RefreshCw, Search } from 'lucide-react';
 import { LEAD_SOURCES, LEAD_STAGES, type AdminUser, type Lead } from '../data/leads';
-import { BUSINESS_INFO } from '../data/portfolioData';
 import { api, NotLoggedIn, type LeadsPageData } from './api';
 import { AssigneeSelect, SourcePill, StageSelect } from './controls';
 import { channelLabel, eventDateLabel, fullDateTime, timeAgo } from './format';
@@ -15,7 +14,7 @@ const AUTO_REFRESH_MS = 60_000;
 
 type Changes = { stage?: string; assignedTo?: string | null; adminNotes?: string | null };
 
-export const LeadsPage: React.FC<{ user: AdminUser; onLoggedOut: () => void }> = ({ user, onLoggedOut }) => {
+export const LeadsPage: React.FC<{ onLoggedOut: () => void }> = ({ onLoggedOut }) => {
   const [stage, setStage] = useState('');
   const [source, setSource] = useState('');
   const [search, setSearch] = useState('');
@@ -130,39 +129,13 @@ export const LeadsPage: React.FC<{ user: AdminUser; onLoggedOut: () => void }> =
     }
   };
 
-  const logout = async () => {
-    await api.logout().catch(() => {});
-    onLoggedOut();
-  };
-
   const counts = data?.counts ?? {};
   const total = Object.values(counts).reduce((a, b) => a + b, 0);
   const openLead = data?.leads.find((l) => l.id === openId) ?? null;
   const filtered = Boolean(stage || source || query);
 
   return (
-    <div className="min-h-screen bg-[#FAF7F2] font-sans text-[#1D1714]">
-      {/* Top bar */}
-      <header className="sticky top-0 z-30 border-b border-[#E7DFD6] bg-white/95 backdrop-blur">
-        <div className="mx-auto flex max-w-[1400px] items-center justify-between gap-4 px-4 py-3 sm:px-6">
-          <div className="flex items-baseline gap-3 min-w-0">
-            <a href="/" className="font-serif italic text-xl sm:text-2xl truncate hover:text-[#9E7D53]">
-              {BUSINESS_INFO.name}
-            </a>
-            <span className="hidden sm:inline text-xs uppercase tracking-[0.18em] text-[#9E7D53]">Leads</span>
-          </div>
-          <div className="flex items-center gap-2 sm:gap-4 shrink-0">
-            <span className="hidden md:inline text-sm text-[#6A5F56]">{user.name}</span>
-            <a href="/" target="_blank" rel="noopener noreferrer" className="hidden sm:inline-flex items-center gap-1.5 text-xs text-[#6A5F56] hover:text-[#1D1714]">
-              Website <ExternalLink className="w-3.5 h-3.5" />
-            </a>
-            <button onClick={logout} className="inline-flex items-center gap-1.5 rounded-full border border-[#E7DFD6] px-3.5 py-2 text-xs font-medium hover:bg-[#F4EFEA]">
-              <LogOut className="w-3.5 h-3.5" /> Log out
-            </button>
-          </div>
-        </div>
-      </header>
-
+    <>
       <main className="mx-auto max-w-[1400px] px-4 py-6 sm:px-6 sm:py-8">
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div>
@@ -343,6 +316,6 @@ export const LeadsPage: React.FC<{ user: AdminUser; onLoggedOut: () => void }> =
           onUpdate={(changes) => updateLead(openLead, changes)}
         />
       )}
-    </div>
+    </>
   );
 };

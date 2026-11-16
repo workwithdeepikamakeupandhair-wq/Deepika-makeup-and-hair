@@ -13,7 +13,7 @@ export const TestimonialsAndInstagram: React.FC = () => {
   return (
     <div className="bg-[#FAF7F2] border-t border-[#E7DFD6]">
       {/* Testimonials */}
-      <section id="testimonials" className="py-24 max-w-7xl mx-auto px-5 sm:px-8">
+      <section id="testimonials" className="pt-16 pb-24 max-w-7xl mx-auto px-5 sm:px-8">
         <div className="text-center max-w-3xl mx-auto space-y-3">
           <div className="inline-flex items-center gap-2 text-xs font-sans tracking-[0.2em] uppercase text-[#9E7D53]">
             <Sparkles className="w-3.5 h-3.5" />

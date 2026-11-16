@@ -2,8 +2,10 @@
  * Leads dashboard API (/api/admin). Everything except login needs the session cookie.
  */
 import { Router } from 'express';
+import { AVAILABILITY_STATUS_IDS, MAX_DAYS_PER_CHANGE, type AvailabilityStatus } from '../../src/data/availability.js';
 import { LEAD_SOURCES, LEAD_STAGE_IDS } from '../../src/data/leads.js';
 import { DUMMY_HASH, endSession, requireAdmin, sessionUser, startSession, verifyPassword } from '../auth.js';
+import { calendarBetween, daysInRange, isIsoDate, markDays } from '../availability.js';
 import { getDb } from '../db.js';
 import { asyncHandler, cleanString, HttpError, rateLimit } from '../http.js';
 import { LEAD_COLUMNS, LEAD_FROM, toLead, type LeadRow } from '../leads.js';
@@ -132,5 +134,42 @@ adminRouter.patch(
     const { rows } = await getDb().query<LeadRow>(`SELECT ${LEAD_COLUMNS} FROM ${LEAD_FROM} WHERE b.id = $1`, [id]);
     console.log(`[admin] ${req.adminUser!.name} updated lead #${id} (${sets.map((s) => s.split(' ')[0]).join(', ')})`);
     res.json({ lead: toLead(rows[0]) });
+  }),
+);
+
+// ---------- Availability calendar (read by the WhatsApp assistant) ----------
+
+/** The calendar shows up to six weeks at a time; allow a little more. */
+const MAX_CALENDAR_DAYS = 93;
+
+/** GET /api/admin/availability?from=2026-11-01&to=2026-12-12 → marked days and the leads with an event then. */
+adminRouter.get(
+  '/availability',
+  asyncHandler(async (req, res) => {
+    const from = typeof req.query.from === 'string' ? req.query.from : '';
+    const to = typeof req.query.to === 'string' ? req.query.to : '';
+    if (!isIsoDate(from) || !isIsoDate(to) || to < from) throw new HttpError(400, 'Choose a valid date range.');
+    if (daysInRange(from, to) > MAX_CALENDAR_DAYS) throw new HttpError(400, `Choose at most ${MAX_CALENDAR_DAYS} days.`);
+    res.json(await calendarBetween(from, to));
+  }),
+);
+
+/** PUT /api/admin/availability { dates: ["2026-12-05"], status: "booked" | "limited" | "available" | null, note? } */
+adminRouter.put(
+  '/availability',
+  asyncHandler(async (req, res) => {
+    const body = req.body ?? {};
+    const dates: unknown[] = Array.isArray(body.dates) ? body.dates : [];
+    if (!dates.length || dates.length > MAX_DAYS_PER_CHANGE || !dates.every((d) => typeof d === 'string' && isIsoDate(d))) {
+      throw new HttpError(400, `Choose between 1 and ${MAX_DAYS_PER_CHANGE} valid days.`);
+    }
+    const status = body.status === null ? null : String(body.status);
+    if (status !== null && !AVAILABILITY_STATUS_IDS.includes(status)) throw new HttpError(400, 'Unknown status.');
+    const note = body.note === undefined ? undefined : cleanString(body.note, 'Note', 500);
+    const unique = [...new Set(dates as string[])].sort();
+
+    await markDays(unique, status as AvailabilityStatus | null, note, req.adminUser!.id);
+    console.log(`[admin] ${req.adminUser!.name} marked ${unique.length} day(s) as ${status ?? 'cleared'} (${unique[0]}${unique.length > 1 ? ` … ${unique.at(-1)}` : ''})`);
+    res.json({ ok: true });
   }),
 );

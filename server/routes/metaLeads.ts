@@ -12,6 +12,8 @@ import { SERVICE_NOT_SPECIFIED } from '../../src/data/leads.js';
 import { inBackground } from '../background.js';
 import { getDb, pool } from '../db.js';
 import { BOOKABLE_SERVICES } from '../knowledge.js';
+
+const LONGEST_NAME_FIRST = [...BOOKABLE_SERVICES].sort((a, b) => b.length - a.length);
 import { answerVerification, validSignature } from '../meta.js';
 
 const LOG = '[meta-leads]';
@@ -79,9 +81,13 @@ function mapAnswers(fieldData: LeadDetails['field_data'] = []) {
   const location = take((n) => n === 'city' || n.includes('location') || n.includes('venue') || n.includes('city'));
   const people = take((n) => n.includes('people') || n.includes('guests') || n.includes('party') || n.includes('how_many'));
 
+  // Exact name, or an answer that contains a full service name ("Airbrush Bridal Makeup please"). Matching on
+  // single words would misfire ("Bride only" → "Only Makeup"), so anything else is saved as the visitor typed it.
+  // Longest names first: "HD Bridal Makeup (Senior Artist)" also contains "HD Bridal Makeup".
+  const answerLower = serviceAnswer?.toLowerCase();
   const service =
-    (serviceAnswer && BOOKABLE_SERVICES.find((s) => s.toLowerCase() === serviceAnswer.toLowerCase())) ??
-    (serviceAnswer && BOOKABLE_SERVICES.find((s) => serviceAnswer.toLowerCase().includes(s.toLowerCase().split(' ')[0]))) ??
+    (answerLower && BOOKABLE_SERVICES.find((s) => s.toLowerCase() === answerLower)) ??
+    (answerLower && LONGEST_NAME_FIRST.find((s) => answerLower.includes(s.toLowerCase()))) ??
     serviceAnswer ??
     SERVICE_NOT_SPECIFIED;
   let eventDate: string | null = null;

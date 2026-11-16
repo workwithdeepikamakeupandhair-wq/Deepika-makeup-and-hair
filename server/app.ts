@@ -14,7 +14,8 @@ import { adminRouter } from './routes/admin.js';
 import { bookingsRouter } from './routes/bookings.js';
 import { chatRouter } from './routes/chat.js';
 import { metaLeadsRouter, metaLeadsStatus } from './routes/metaLeads.js';
-import { whatsappEnabled, whatsappRouter } from './routes/whatsapp.js';
+import { twilioWhatsAppEnabled, twilioWhatsAppPath, twilioWhatsAppRouter } from './routes/twilioWhatsapp.js';
+import { metaWhatsAppEnabled, whatsappRouter } from './routes/whatsapp.js';
 
 export const SERVICE_NAME = 'DMH API';
 export const LOG = '[dmh-api]';
@@ -29,8 +30,10 @@ export function createApp({ websiteDir }: AppOptions = {}): Express {
 
   app.disable('x-powered-by');
   app.set('trust proxy', 1); // correct client IPs behind a host's proxy (for rate limiting)
-  // Before express.json: Meta's webhooks (WhatsApp, Lead Ads) are signature-checked against the raw body
+  // Before express.json: Meta's webhooks (WhatsApp, Lead Ads) are signature-checked against the raw body, and
+  // Twilio's arrive as forms
   app.use('/api/whatsapp', whatsappRouter);
+  app.use(twilioWhatsAppPath, twilioWhatsAppRouter);
   app.use('/api/meta', metaLeadsRouter);
   app.use(express.json({ limit: '20kb' }));
 
@@ -50,7 +53,8 @@ export function createApp({ websiteDir }: AppOptions = {}): Express {
       status: 'ok',
       database,
       chat: openai ? `openai:${OPENAI_MODEL}` : 'search-only',
-      whatsapp: whatsappEnabled ? 'enabled' : 'not_configured',
+      whatsapp: metaWhatsAppEnabled || twilioWhatsAppEnabled ? 'enabled' : 'not_configured',
+      whatsappConnections: [...(metaWhatsAppEnabled ? ['meta'] : []), ...(twilioWhatsAppEnabled ? ['twilio'] : [])],
       metaLeads: metaLeadsStatus,
       // The caller's own IP as the API sees it. Behind a proxy (the website forwarding /api here) it must still be
       // the visitor's IP, or the per-visitor rate limits would be shared by everyone.

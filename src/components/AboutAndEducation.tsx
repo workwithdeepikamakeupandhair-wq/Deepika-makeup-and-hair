@@ -8,13 +8,14 @@ import { Sparkles, GraduationCap, CheckCircle2, MapPin, Award } from 'lucide-rea
 import { DeepikaPhotoSlider } from './DeepikaPhotoSlider';
 import { MasterclassVideo } from './MasterclassVideo';
 import { WhatsAppIcon } from './WhatsAppIcon';
-import { BUSINESS_INFO, WHATSAPP_CONTACTS } from '../data/portfolioData';
+import { BUSINESS_INFO, EXPERIENCE_STATS, WHATSAPP_CONTACTS } from '../data/portfolioData';
 
-interface AboutAndEducationProps {
-  onOpenBooking: () => void;
-}
+/** Classes aren't on the price list, so class questions go straight to Deepika on WhatsApp. */
+const CLASS_WHATSAPP_URL = `${BUSINESS_INFO.whatsappUrl}?text=${encodeURIComponent(
+  `Hello ${BUSINESS_INFO.artist.split(' ')[0]}, I am interested in your makeup classes. Could you share the details?`,
+)}`;
 
-export const AboutAndEducation: React.FC<AboutAndEducationProps> = ({ onOpenBooking }) => {
+export const AboutAndEducation: React.FC = () => {
   return (
     <div id="masterclass" className="bg-[#FAF7F2] border-t border-[#E7DFD6]">
       {/* Part 1: About Deepika */}
@@ -56,15 +57,16 @@ export const AboutAndEducation: React.FC<AboutAndEducationProps> = ({ onOpenBook
 
             <div className="space-y-4 text-sm sm:text-base text-[#6A5F56] font-sans leading-relaxed">
               <p>
-                Welcome to Deepika Makeup &amp; Hair. Based in Atlanta, Georgia, Deepika is a celebrated
-                bridal beauty expert, hair artisan, and educator with over a decade of dedicated experience.
-                Her artistry celebrates the timeless splendor of South Asian bridal heritage while seamlessly
-                incorporating modern glam techniques, for brides and for every kind of party.
+                Welcome to Deepika Makeup &amp; Hair. Based in Atlanta, Georgia, Deepika brings 15+ years of
+                expertise in the beauty industry, 6000+ bridal transformations and 8000+ non-bridal clients.
+                She is known for timeless, luxury bridal looks that are personally curated to make every bride
+                feel flawless, radiant and unforgettable.
               </p>
               <p>
-                Having styled hundreds of brides across the United States and international destinations,
-                Deepika understands the nuanced lighting of traditional mandaps, the intense demands of
-                stage photography, and the deep emotional significance of each wedding moment.
+                Every bridal look is designed around your event, whether it is your wedding, engagement,
+                Pellikuthuru or another wedding event, along with your skin type and your dream vision. For the
+                bride&rsquo;s family and wedding guests, each look is customized to age, skin type, outfit and role
+                in the celebration.
               </p>
               <p>
                 Her philosophy is uncompromising: makeup should never look like a foreign mask.
@@ -74,25 +76,15 @@ export const AboutAndEducation: React.FC<AboutAndEducationProps> = ({ onOpenBook
             </div>
 
             {/* Quick credentials */}
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 pt-4 border-t border-[#E7DFD6]">
-              <div className="space-y-1">
-                <p className="font-serif text-2xl text-[#1D1714]">10+ Yrs</p>
-                <p className="text-[11px] font-sans uppercase tracking-wider text-[#9E7D53]">
-                  Bridal Mastery
-                </p>
-              </div>
-              <div className="space-y-1">
-                <p className="font-serif text-2xl text-[#1D1714]">Atlanta</p>
-                <p className="text-[11px] font-sans uppercase tracking-wider text-[#9E7D53]">
-                  Studio Atelier
-                </p>
-              </div>
-              <div className="space-y-1">
-                <p className="font-serif text-2xl text-[#1D1714]">Global</p>
-                <p className="text-[11px] font-sans uppercase tracking-wider text-[#9E7D53]">
-                  Destination Bookings
-                </p>
-              </div>
+            <div className="grid grid-cols-3 gap-4 pt-4 border-t border-[#E7DFD6]">
+              {EXPERIENCE_STATS.map((s) => (
+                <div key={s.label} className="space-y-1">
+                  <p className="font-serif text-2xl text-[#1D1714]">{s.value}</p>
+                  <p className="text-[11px] font-sans uppercase tracking-wider text-[#9E7D53] leading-tight">
+                    {s.label}
+                  </p>
+                </div>
+              ))}
             </div>
 
             <div className="pt-2 flex flex-wrap items-center gap-4">
@@ -122,7 +114,7 @@ export const AboutAndEducation: React.FC<AboutAndEducationProps> = ({ onOpenBook
       </section>
 
       {/* Part 2: Makeup Education & Masterclass */}
-      <section className="py-20 bg-[#F4EFEA] border-t border-[#E7DFD6]">
+      <section className="pt-20 pb-16 bg-[#F4EFEA] border-t border-[#E7DFD6]">
         <div className="max-w-7xl mx-auto px-5 sm:px-8">
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-12 items-center">
             {/* Left Column: Masterclass Details */}
@@ -200,21 +192,14 @@ export const AboutAndEducation: React.FC<AboutAndEducationProps> = ({ onOpenBook
               </div>
 
               <div className="pt-4 flex flex-wrap items-center gap-4">
-                <button
-                  onClick={onOpenBooking}
-                  className="btn-gold px-7 py-3.5 rounded-full text-xs uppercase tracking-[0.14em] font-sans font-medium"
-                >
-                  Reserve Masterclass Seat
-                </button>
-
                 <a
-                  href={`${BUSINESS_INFO.whatsappUrl}?text=Hello%20Deepika,%20I%20am%20interested%20in%20your%20Self-Makeup%20Class%20in%20Atlanta.`}
+                  href={CLASS_WHATSAPP_URL}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="inline-flex items-center gap-2 text-xs font-sans tracking-[0.12em] uppercase text-[#9E7D53] hover:text-[#1D1714]"
+                  className="btn-gold px-7 py-3.5 rounded-full text-xs uppercase tracking-[0.14em] font-sans font-medium inline-flex items-center gap-2"
                 >
                   <WhatsAppIcon className="w-4 h-4" />
-                  <span>Ask Syllabus on WhatsApp</span>
+                  <span>Ask About Classes on WhatsApp</span>
                 </a>
               </div>
             </div>

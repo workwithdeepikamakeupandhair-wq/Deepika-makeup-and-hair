@@ -45,6 +45,17 @@ CREATE INDEX IF NOT EXISTS bookings_status_idx ON bookings (status);
 CREATE INDEX IF NOT EXISTS bookings_phone_idx ON bookings (phone);
 
 CREATE INDEX IF NOT EXISTS bookings_created_at_idx ON bookings (created_at DESC);
+CREATE INDEX IF NOT EXISTS bookings_event_date_idx ON bookings (event_date) WHERE event_date IS NOT NULL;
+
+-- Deepika's availability calendar, marked in the dashboard (/admin/calendar) and read by the WhatsApp assistant.
+-- One row per marked day; a day without a row is open.
+CREATE TABLE IF NOT EXISTS availability (
+  day        date        PRIMARY KEY,
+  status     text        NOT NULL CHECK (status IN ('available', 'limited', 'booked')),  -- Free / Few slots left / Fully booked
+  note       text,                                    -- private team note, never shown to customers
+  updated_by bigint      REFERENCES admin_users (id) ON DELETE SET NULL,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
 
 -- Knowledge base for the RAG assistant (filled by: npm run db:ingest).
 CREATE TABLE IF NOT EXISTS knowledge_chunks (

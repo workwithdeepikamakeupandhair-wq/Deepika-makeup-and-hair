@@ -111,7 +111,28 @@ Things that differ from a normal server:
 
 ## WhatsApp bot
 
-Deepika's virtual assistant also answers customers on WhatsApp (`server/routes/whatsapp.ts`, prompt in `server/llm.ts`).
+Deepika's virtual assistant also answers customers on WhatsApp. The conversation logic is in `server/whatsappBot.ts`
+and the prompt in `server/llm.ts`. A number can be connected in two ways, and both can be on at once:
+
+| Connection | Webhook | Settings | File |
+|---|---|---|---|
+| **Twilio** (the WhatsApp sandbox for testing, or a number bought from Twilio) | `/api/twilio/whatsapp` | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` | `server/routes/twilioWhatsapp.ts` |
+| **Meta's Cloud API** (a number registered directly with Meta) | `/api/whatsapp/webhook` | the four `WHATSAPP_*` values | `server/routes/whatsapp.ts` |
+
+**Welcome.** The first reply welcomes the customer by name to Deepika Makeup & Hair and asks what occasion they need
+makeup or hair for, and on which date. If their first message already asks something or gives details, that's answered
+first, and the bot asks only for what's still missing.
+
+**Availability.** When a customer mentions a date or asks whether Deepika is free, the assistant checks the
+[availability calendar](#availability-calendar-admincalendar) that Deepika's team keeps in the dashboard:
+
+- **Open** (marked Free, or not marked): it says so and offers to take a booking request.
+- **Few slots left:** it says only a few slots are left and suggests sending the request soon.
+- **Fully booked:** it apologizes, names the nearest open dates within a week either side (looked up, never guessed),
+  and offers to send the request anyway in case a slot opens up.
+
+It never calls a date reserved: Deepika still confirms every booking herself. Requests for a date marked Fully booked or
+Few slots left say so in "What they told us", so the dashboard shows it.
 
 **Its own number (default).** The assistant has its own WhatsApp number, separate from Deepika's, and nobody reads those
 chats. So for anything personal it gives Deepika's own WhatsApp links and phone, and when a customer asks for her, it
@@ -122,7 +143,7 @@ See [Going live with coexistence](#going-live-with-coexistence).
 **Answers.** Every question is sent with the full business facts: all services with durations and what's included,
 location and service area, contact numbers, certification, pricing policy and the FAQ (`businessFacts()` in
 `server/knowledge.ts`). It also gets the closest knowledge-base entries (looks, Instagram captions, reviews). It never
-invents prices, availability, policies, addresses or products. For anything it doesn't know (trial sessions, deposits,
+invents prices, policies, addresses or products, and takes availability only from the calendar. For anything it doesn't know (trial sessions, deposits,
 studio address, brands…), it offers to pass the question to Deepika and gives her direct WhatsApp. With coexistence it
 says she'll reply in the chat. It replies in the customer's language and declines off-topic requests.
 
@@ -135,8 +156,9 @@ detail within a day, the same request is updated.
 **Each incoming message:**
 
 - **Text, and taps on buttons:** answered after a 1.5-second pause, so several quick messages ("hi", "price for
-  bridal?") get one reply. The customer sees blue ticks and "typing…" while it works. The first reply of a conversation
-  carries three buttons: *Book appointment*, *Our services* and *Talk to Deepika*.
+  bridal?") get one reply. The customer sees blue ticks and "typing…" while it works. Through Meta, the first reply
+  of a conversation carries three buttons: *Book appointment*, *Our services* and *Talk to Deepika*. Twilio needs
+  approved content templates for buttons, so there the replies are plain text and customers just type.
 - **Talk to Deepika:** the button, or asking for her in words, hands the customer over.
   - *Own number:* they're saved as a lead in the dashboard (channel WhatsApp). The lead's "What they told us" holds the
     reason and their recent messages, and asking again adds to the same lead. They also get Deepika's own WhatsApp and
@@ -146,15 +168,62 @@ detail within a day, the same request is updated.
 - **Photos, videos, files and voice notes:** a short reply, at most every 30 minutes per chat. The bot can't see them,
   so it asks for them to be sent to Deepika's own WhatsApp; with coexistence it says she'll look at them. Voice notes
   also get a request to type the question. Stickers and reactions are ignored.
-- **Old messages:** anything more than 10 minutes old (e.g. redelivered after downtime) is left for Deepika.
+- **Old messages:** anything more than 10 minutes old (e.g. redelivered after downtime) is left for Deepika (Meta only;
+  Twilio doesn't send the time).
 - **Coexistence (Deepika's real number):** when she replies to a customer from the WhatsApp Business app, the bot stays
   quiet in that chat for `WHATSAPP_HUMAN_TAKEOVER_HOURS`.
-- **Safety:** every webhook's signature is checked with the App secret and duplicates are ignored. Each customer gets at
-  most 15 bot replies per 10 minutes. Logs show only the last 4 digits of phone numbers.
+- **Safety:** every webhook's signature is checked (Meta: the App secret; Twilio: the Auth Token, plus the account SID)
+  and duplicates are ignored. Each customer gets at most 15 bot replies per 10 minutes. Logs show only the last 4
+  digits of phone numbers.
+- **Garbled names:** the model now and then writes a name in the wrong alphabet ("प्रियa"). Such a reply is written
+  again before it's sent. A reply in Hindi script to a customer who writes Hindi or Hinglish is fine.
 
 Chat history (last 20 messages) and pauses are kept in memory, so a restart only forgets recent context. With
 `gpt-5.4-mini`, WhatsApp replies run with `reasoning_effort: none`, because OpenAI's Chat Completions API doesn't allow
 function tools together with reasoning on that model. `OPENAI_TOOLS_REASONING_EFFORT` overrides this for other models.
+
+### Testing with Twilio's WhatsApp sandbox
+
+1. **Join the sandbox:** Twilio Console → Messaging → Try it out → *Send a WhatsApp message* (on a trial account the
+   page is called **Try out WhatsApp**). From your phone, send the join message shown there (e.g. `join <two-words>`) to
+   the number shown (classically **+1 415 523 8886**). Each tester joins once, and joins again after 3 days without
+   messages.
+2. **Settings:** put the Account SID and Auth Token (Console → Account info) in `.env` as `TWILIO_ACCOUNT_SID` and
+   `TWILIO_AUTH_TOKEN`. Restart DMH API: the startup log should say `whatsapp: bot on via Twilio`.
+3. **Public address:** run the tunnel to port 4000 (`ngrok http --url=<your-domain> 4000`). Opening
+   `https://<your-domain>/api/twilio/whatsapp` in a browser should say the webhook is ready.
+4. **Webhook:** in the sandbox's settings, set **When a message comes in** to
+   `https://<your-domain>/api/twilio/whatsapp`, method **POST**, and save. On a trial account's **Try out WhatsApp**
+   page: select **Inbound**, choose **Custom** under **Auto-Reply settings**, and add the same webhook. Leave the status
+   callback empty: the bot asks for delivery reports itself. Until this is set, Twilio answers every message itself
+   with "Standard auto-reply…".
+5. **Try it:** send "Hi" from the phone that joined. The bot welcomes you and asks for the occasion and date.
+
+**Trial accounts can't send the bot's replies.** Twilio's trial only lets messages use `To`, `From`, `StatusCallback` and
+a `ContentSid` pointing at one of Twilio's own templates ("You won't be able to write your own message"). TwiML replies
+aren't supported either ([Twilio docs](https://www.twilio.com/docs/usage/trials/try-out-whatsapp)). So on a trial account
+the bot receives messages, but Twilio refuses its answers, and the DMH API log shows `could not reply … Twilio 400 …`.
+Upgrading the Twilio account (adding a payment method, which buying a number needs anyway) removes this limit. Until
+then, the bot can be tested on Meta's test number (below).
+
+Failed deliveries show in the DMH API log with what the error code means (e.g. 63015: that phone hasn't joined the
+sandbox; 63016: outside WhatsApp's 24-hour window). Trial accounts have a low daily message limit.
+
+**On Vercel:** add `TWILIO_ACCOUNT_SID` and `TWILIO_AUTH_TOKEN` to the API project. The simplest webhook is the API's own
+address (`https://<api-domain>/api/twilio/whatsapp`). To use the website domain instead, also set `TWILIO_WEBHOOK_URL` to
+exactly that URL, because Twilio signs the address it called and the API sees its own. The bot's chat memory is
+shorter there (see [Vercel](#vercel)).
+
+### Going live with a number bought from Twilio
+
+1. **Buy a number** in Twilio (Phone Numbers → Buy a number) that isn't on WhatsApp yet.
+2. **Register it as a WhatsApp sender:** Messaging → Senders → WhatsApp senders. This connects or creates the WhatsApp
+   Business Account through Meta (display name, Facebook Business verification).
+3. **Webhook:** on the sender, set **When a message comes in** to the same `/api/twilio/whatsapp` address.
+
+No code or setting changes: the bot always replies from the number the customer wrote to. To answer only on the new
+number (and not the sandbox), set `TWILIO_WHATSAPP_NUMBER` to it. Replies within 24 hours of a customer's message are
+session messages.
 
 ### Testing with Meta's test number
 
@@ -244,6 +313,26 @@ derived from `DATABASE_URL`, so they survive restarts.
 - **Rate limit:** 10 login attempts per 15 minutes per IP.
 - **Lead data:** every `/api/admin` call except login needs the cookie.
 - **Search engines:** the page tells them not to index it.
+
+### Availability calendar (/admin/calendar)
+
+The **Calendar** tab, next to **Leads**, is where Deepika or her team mark each day. The WhatsApp assistant reads it
+whenever a customer asks about a date.
+
+| Mark | What WhatsApp customers hear |
+|---|---|
+| **Free** / not marked | The date is open; the bot offers to take their booking request |
+| **Few slots left** | Only a few slots are left, so they should send the request soon |
+| **Fully booked** | The date is booked, plus the nearest open dates, and the request can still go to Deepika in case a slot opens up |
+
+- **Mark days:** click a day, then choose a mark. *Select several days* (or Ctrl/⌘-click, or Shift-click for a range)
+  marks many at once. *Clear mark* makes a day open again. Past days can't be changed.
+- **Team note:** a marked day can carry a private note (e.g. "Priya's wedding, ready by 7 am"). Customers never see it.
+- **Leads on each day:** each day shows how many leads have their event then, and clicking it lists them with their
+  stage, so you can see what's already requested before marking a day full.
+
+Days are stored in the `availability` table (one row per marked day). "Today" follows Atlanta time, as the bot does.
+Run `npm run db:setup` once to create the table on a new database.
 
 ### Leads from Meta ads
 

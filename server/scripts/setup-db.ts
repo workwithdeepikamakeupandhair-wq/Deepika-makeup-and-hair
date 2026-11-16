@@ -7,7 +7,7 @@ const sql = fs.readFileSync(path.resolve(import.meta.dirname, '..', 'schema.sql'
 
 try {
   await getDb().query(sql);
-  console.log('Database ready: pgvector enabled, tables "bookings" and "knowledge_chunks" created.');
+  console.log('Database ready: pgvector enabled, tables "bookings", "admin_users", "availability" and "knowledge_chunks" created.');
 } catch (err) {
   console.error('Database setup failed:', err instanceof Error ? err.message : err);
   process.exitCode = 1;

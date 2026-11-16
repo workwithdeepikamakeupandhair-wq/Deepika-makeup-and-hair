@@ -1,6 +1,7 @@
 /**
  * Calls to DMH API's dashboard routes (/api/admin). The login lives in an HttpOnly cookie the browser sends itself.
  */
+import type { AvailabilityDay, AvailabilityStatus, CalendarLead } from '../data/availability';
 import type { AdminUser, Lead } from '../data/leads';
 
 /** Thrown when the session has expired or the user logged out in another tab. */
@@ -44,4 +45,10 @@ export const api = {
   },
   updateLead: (id: string, changes: { stage?: string; assignedTo?: string | null; adminNotes?: string | null }) =>
     request<{ lead: Lead }>(`/leads/${id}`, { method: 'PATCH', body: JSON.stringify(changes) }).then((d) => d.lead),
+  /** Marked days and leads with an event date between `from` and `to` (YYYY-MM-DD). */
+  calendar: (from: string, to: string) =>
+    request<{ days: AvailabilityDay[]; leads: CalendarLead[] }>(`/availability?${new URLSearchParams({ from, to })}`),
+  /** Marks days (status), clears them (null), and/or changes their note (omit `note` to keep it). */
+  markDays: (dates: string[], status: AvailabilityStatus | null, note?: string | null) =>
+    request<{ ok: true }>('/availability', { method: 'PUT', body: JSON.stringify({ dates, status, ...(note !== undefined && { note }) }) }),
 };

@@ -10,7 +10,9 @@ import { createApp, LOG, SERVICE_NAME } from './app.js';
 import { pool } from './db.js';
 import { warmUpEmbeddings } from './embeddings.js';
 import { openai, OPENAI_MODEL } from './llm.js';
-import { missingWhatsAppSettings, whatsappEnabled, whatsappMode, whatsappPhoneNumberId } from './routes/whatsapp.js';
+import { twilioWhatsAppEnabled, twilioWhatsAppPath } from './routes/twilioWhatsapp.js';
+import { metaPhoneNumberId, metaWhatsAppEnabled, missingMetaWhatsAppSettings } from './routes/whatsapp.js';
+import { whatsappMode } from './whatsappBot.js';
 
 const PORT = Number(process.env.PORT) || 4000;
 const distDir = path.resolve(import.meta.dirname, '..', 'dist');
@@ -25,12 +27,13 @@ const server = app.listen(PORT, () => {
       ? `${LOG} chat: OpenAI ${OPENAI_MODEL} + pgvector RAG`
       : `${LOG} chat: search-only (set OPENAI_API_KEY in .env for AI answers)`,
   );
-  if (whatsappEnabled) {
+  if (metaWhatsAppEnabled) {
     const mode = whatsappMode === 'coexistence' ? "coexistence on Deepika's number" : 'own number';
-    console.log(`${LOG} whatsapp: bot on (${mode}), webhook at /api/whatsapp/webhook (number id …${whatsappPhoneNumberId!.slice(-4)})`);
-  } else if (missingWhatsAppSettings.length < 4) {
-    console.warn(`${LOG} whatsapp: bot off, missing ${missingWhatsAppSettings.join(', ')} in .env`);
+    console.log(`${LOG} whatsapp: bot on via Meta (${mode}), webhook at /api/whatsapp/webhook (number id …${metaPhoneNumberId!.slice(-4)})`);
+  } else if (missingMetaWhatsAppSettings.length < 4) {
+    console.warn(`${LOG} whatsapp: Meta connection off, missing ${missingMetaWhatsAppSettings.join(', ')} in .env`);
   }
+  if (twilioWhatsAppEnabled) console.log(`${LOG} whatsapp: bot on via Twilio, webhook at ${twilioWhatsAppPath}`);
   if (fs.existsSync(distDir)) console.log(`${LOG} serving website from ${distDir}`);
   warmUpEmbeddings();
 });

@@ -77,13 +77,10 @@ export default function App() {
         <TransformationSection onOpenBooking={handleOpenBooking} />
 
         {/* 6. Comprehensive Services & Packages */}
-        <ServicesSection
-          onSelectServiceForBooking={handleSelectServiceForBooking}
-          onOpenBooking={handleOpenBooking}
-        />
+        <ServicesSection onSelectServiceForBooking={handleSelectServiceForBooking} />
 
         {/* 7. About Deepika S & Makeup Education Atelier */}
-        <AboutAndEducation onOpenBooking={handleOpenBooking} />
+        <AboutAndEducation />
 
         {/* 8. Client Testimonials & Instagram Connect */}
         <TestimonialsAndInstagram />

@@ -4,8 +4,8 @@
  */
 
 import React, { useEffect, useRef, useState } from 'react';
-import { ArrowLeft, ArrowRight, Heart, Sparkles, Check, Bookmark } from 'lucide-react';
-import { RUNWAY_LOOKS, RunwayLookItem } from '../data/portfolioData';
+import { ArrowLeft, ArrowRight, Sparkles } from 'lucide-react';
+import { RUNWAY_LOOKS } from '../data/portfolioData';
 
 interface RunwayLookbookProps {
   onOpenBooking: () => void;
@@ -30,7 +30,6 @@ export const RunwayLookbook: React.FC<RunwayLookbookProps> = ({ onOpenBooking })
   const rollRef = useRef<HTMLDivElement>(null);
 
   const [activeLookIndex, setActiveLookIndex] = useState(0);
-  const [savedItems, setSavedItems] = useState<Record<string, boolean>>({});
 
   // Physics state
   const stateRef = useRef({
@@ -56,8 +55,13 @@ export const RunwayLookbook: React.FC<RunwayLookbookProps> = ({ onOpenBooking })
     side: false,
   });
 
-  const toggleSaveItem = (key: string) => {
-    setSavedItems(prev => ({ ...prev, [key]: !prev[key] }));
+  /** Walk the shortest way round the (looping) line to look `idx`. */
+  const goToLook = (idx: number) => {
+    const N = RUNWAY_LOOKS.length;
+    const current = Math.round(stateRef.current.target);
+    let d = (((idx - current) % N) + N) % N;
+    if (d > N / 2) d -= N;
+    stateRef.current.target = current + d;
   };
 
   useEffect(() => {
@@ -382,9 +386,6 @@ export const RunwayLookbook: React.FC<RunwayLookbookProps> = ({ onOpenBooking })
                       <h4 className="font-serif text-xl sm:text-2xl font-medium leading-tight">
                         {item.title}
                       </h4>
-                      <p className="text-xs text-white/80 line-clamp-1 font-light">
-                        {item.subtitle}
-                      </p>
                     </div>
                   </div>
                 </div>
@@ -392,7 +393,7 @@ export const RunwayLookbook: React.FC<RunwayLookbookProps> = ({ onOpenBooking })
             </div>
 
             {/* Rolling Look Number Counter at bottom-left */}
-            <div className="absolute bottom-6 left-6 z-20 bg-[#FAF7F2]/90 backdrop-blur-md px-5 py-3 rounded-xl border border-[#E7DFD6] shadow-lg flex items-center gap-3">
+            <div className="absolute bottom-6 left-6 z-[150] bg-[#FAF7F2]/90 backdrop-blur-md px-5 py-3 rounded-xl border border-[#E7DFD6] shadow-lg flex items-center gap-3">
               <span className="text-xs font-sans tracking-[0.2em] uppercase text-[#9E7D53] font-bold">
                 Look
               </span>
@@ -411,8 +412,9 @@ export const RunwayLookbook: React.FC<RunwayLookbookProps> = ({ onOpenBooking })
               </div>
             </div>
 
-            {/* Instruction tooltip */}
-            <div className="absolute top-5 right-5 z-20 hidden sm:block bg-[#FAF7F2]/80 backdrop-blur-sm px-3.5 py-1.5 rounded-full border border-[#E7DFD6] text-[10px] font-sans tracking-[0.12em] uppercase text-[#6A5F56]">
+            {/* Instruction tooltip. Bottom-right, clear of the front photo; z above the photos (they use z-index up to
+                ~110), which used to hide it at the top-right. */}
+            <div className="absolute bottom-6 right-6 z-[150] hidden sm:block bg-[#FAF7F2]/80 backdrop-blur-sm px-3.5 py-1.5 rounded-full border border-[#E7DFD6] text-[10px] font-sans tracking-[0.12em] uppercase text-[#6A5F56]">
               Drag horizontal to walk the line
             </div>
           </div>
@@ -426,77 +428,59 @@ export const RunwayLookbook: React.FC<RunwayLookbookProps> = ({ onOpenBooking })
               <div className="flex items-center justify-between pb-3 border-b border-[#E7DFD6]">
                 <div>
                   <span className="text-[10px] font-sans uppercase tracking-[0.2em] text-[#9E7D53]">
-                    Active Silhouette
+                    Now Showing
                   </span>
                   <h3 className="font-serif text-2xl text-[#1D1714] font-medium">
                     {currentLook.title}
                   </h3>
                 </div>
-                <span className="text-xs font-sans font-bold px-2.5 py-1 bg-[#F4EFEA] border border-[#C5A880] rounded-full text-[#1D1714]">
-                  {currentLook.lookNum} / 06
+                <span className="text-xs font-sans font-bold px-2.5 py-1 bg-[#F4EFEA] border border-[#C5A880] rounded-full text-[#1D1714] shrink-0">
+                  {currentLook.lookNum} / {String(RUNWAY_LOOKS.length).padStart(2, '0')}
                 </span>
               </div>
 
-              <p className="text-xs text-[#6A5F56] leading-relaxed font-sans">
-                {currentLook.description}
-              </p>
-
-              {/* Elements Breakdown List */}
-              <div className="space-y-2.5 pt-2">
-                <p className="text-[11px] font-sans uppercase tracking-[0.16em] text-[#1D1714] font-semibold">
-                  Artistry &amp; Hair Architecture
-                </p>
-
-                {currentLook.elements.map((elem, idx) => {
-                  const itemKey = `${currentLook.id}-${idx}`;
-                  const isSaved = !!savedItems[itemKey];
-
+              {/* All looks: tap one to bring it to the front */}
+              <ol className="space-y-1.5">
+                {RUNWAY_LOOKS.map((look, idx) => {
+                  const isActive = idx === activeLookIndex;
                   return (
-                    <div
-                      key={idx}
-                      className="p-3 rounded-xl bg-white border border-[#E7DFD6] hover:border-[#C5A880] transition-colors flex items-start justify-between gap-3 shadow-xs"
-                    >
-                      <div className="space-y-0.5">
-                        <div className="flex items-center gap-2">
-                          <span className="text-[9px] uppercase font-sans tracking-wider px-1.5 py-0.5 bg-[#FAF7F2] text-[#9E7D53] rounded">
-                            {elem.type}
-                          </span>
-                          <span className="font-medium text-xs text-[#1D1714]">
-                            {elem.name}
-                          </span>
-                        </div>
-                        <p className="text-[11px] text-[#6A5F56] leading-tight">
-                          {elem.details}
-                        </p>
-                      </div>
-
+                    <li key={look.id}>
                       <button
-                        onClick={() => toggleSaveItem(itemKey)}
-                        className="p-1.5 text-[#A89F93] hover:text-[#C5A880] transition-colors shrink-0"
-                        title={isSaved ? "Saved to wish-list" : "Save this detail"}
-                        aria-label={`Save ${elem.name}`}
+                        type="button"
+                        onClick={() => goToLook(idx)}
+                        aria-current={isActive ? 'true' : undefined}
+                        className={`w-full flex items-center gap-3 p-2 rounded-xl border text-left transition-colors ${
+                          isActive ? 'bg-white border-[#C5A880] shadow-xs' : 'border-transparent hover:bg-white/70'
+                        }`}
                       >
-                        <Bookmark
-                          className={`w-4 h-4 ${isSaved ? 'fill-[#C5A880] text-[#C5A880]' : ''}`}
+                        <img
+                          src={look.image}
+                          alt=""
+                          aria-hidden="true"
+                          loading="lazy"
+                          className="w-10 h-12 rounded-lg object-cover object-top shrink-0"
                         />
+                        <span className="text-[10px] font-sans font-bold tracking-wider text-[#9E7D53]">
+                          {look.lookNum}
+                        </span>
+                        <span className={`text-xs font-sans ${isActive ? 'font-semibold text-[#1D1714]' : 'text-[#4A3F38]'}`}>
+                          {look.title}
+                        </span>
                       </button>
-                    </div>
+                    </li>
                   );
                 })}
-              </div>
+              </ol>
             </div>
 
             {/* Direct Action */}
-            <div className="pt-4 border-t border-[#E7DFD6] space-y-3">
+            <div className="pt-4 border-t border-[#E7DFD6]">
               <button
                 onClick={onOpenBooking}
                 className="w-full btn-gold py-3 rounded-full text-xs uppercase tracking-[0.14em] font-sans font-medium text-center block"
               >
                 Inquire For Look {currentLook.lookNum}
               </button>
-              <p className="text-[10px] text-center text-[#6A5F56]">
-                Deepika provides all premium styling products, lashes &amp; jewelry pinning.
-              </p>
             </div>
           </div>
         </div>
