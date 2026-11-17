@@ -138,7 +138,10 @@ export const PackageList: React.FC<PackageListProps> = ({ tier, onBook }) => {
         highlight={Boolean(service.badge)}
       >
         <h3 className="font-serif text-2xl text-white font-medium leading-snug">{service.title}</h3>
-        <p className="font-serif text-3xl text-[#EBD9BC] leading-tight">{formatPrice(service.price)}</p>
+        <p className="font-serif text-3xl text-[#EBD9BC] leading-tight">
+          {formatPrice(service.price)}
+          {service.perPerson && <span className="ml-1.5 font-sans text-xs text-white/90">per person</span>}
+        </p>
 
         {service.forWhom && (
           <p className="mt-1.5 text-xs text-white/90 font-sans leading-relaxed">{service.forWhom}</p>

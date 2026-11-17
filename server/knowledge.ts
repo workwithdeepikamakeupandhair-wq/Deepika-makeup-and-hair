@@ -11,7 +11,12 @@ import {
   BUSINESS_INFO,
   EXPERIENCE_STATS,
   formatPrice,
+  formatServicePrice,
+  FUNCTION_OCCASIONS,
+  FUNCTION_PRICES,
   NON_BRIDAL_NOT_INCLUDED,
+  type OccasionPrice,
+  PARTY_PRICES,
   SENIOR_ARTIST_SERVICES,
   SERVICES,
   ServiceItem,
@@ -43,7 +48,7 @@ export function embeddingText(chunk: KnowledgeChunk): string {
 const B = BUSINESS_INFO;
 
 const list = (items: string[]) => items.join('; ');
-const priced = (s: ServiceItem) => `${s.title}: ${formatPrice(s.price)}`;
+const priced = (s: ServiceItem) => `${s.title}: ${formatServicePrice(s)}`;
 const byCategory = (c: ServiceItem['category'], services = SERVICES) => services.filter((s) => s.category === c);
 const ALL_SERVICES = [...SERVICES, ...SENIOR_ARTIST_SERVICES];
 
@@ -60,7 +65,7 @@ function notIncludedLine(s: ServiceItem): string {
 /** One service as a sentence: name, price, what it is, what is included. */
 function describeService(s: ServiceItem): string {
   return [
-    `${bookingName(s)} costs ${formatPrice(s.price)}${s.badge ? ` (${s.badge})` : ''}.`,
+    `${bookingName(s)} costs ${formatServicePrice(s)}${s.badge ? ` (${s.badge})` : ''}.`,
     s.forWhom ? `${s.forWhom}.` : '',
     s.features.length ? `Features: ${list(s.features)}.` : '',
     s.idealFor ? `Ideal for: ${s.idealFor}.` : '',
@@ -74,11 +79,21 @@ const SENIOR_PRICE_LIST =
   `With a senior artist: ${SENIOR_ARTIST_SERVICES.map(priced).join(', ')}. ` +
   'Each senior artist bridal package includes one hairstyling and one saree draping.';
 
+/** "HD Makeup $500 (includes one hairstyle and one saree draping)" */
+const occasionPrices = (prices: OccasionPrice[]) =>
+  prices
+    .map((q) => `${q.title} ${formatPrice(q.price)}${q.includes?.length ? ` (includes ${q.includes.join(' and ').toLowerCase()})` : ''}`)
+    .join(', ');
+
+/** What Deepika quotes for occasions other than weddings (not on the prices page). */
+const FUNCTIONS_PRICE_LIST = `${FUNCTION_OCCASIONS.join(', ')} (with Deepika herself): ${occasionPrices(FUNCTION_PRICES)}.`;
+const PARTIES_PRICE_LIST = `Birthday parties and other parties (per person, with Deepika herself): ${occasionPrices(PARTY_PRICES)}.`;
+
 const PRICE_LIST =
   `With Deepika herself: bridal packages (prices for Atlanta): ${byCategory('bridal').map(priced).join(', ')}. ` +
   `${byCategory('family').map(priced).join(', ')}. ` +
   `Separate charges: ${byCategory('single').map(priced).join(', ')}. ` +
-  `${SENIOR_PRICE_LIST} Travel charges are additional (based on location). ` +
+  `${SENIOR_PRICE_LIST} ${FUNCTIONS_PRICE_LIST} ${PARTIES_PRICE_LIST} Travel charges are additional (based on location). ` +
   `The full price list: ${B.website}/prices`;
 
 /** Frequently asked questions: answers use only Deepika's price list and facts already on the site. */
@@ -123,6 +138,14 @@ export const FAQ: { q: string; a: string }[] = [
   {
     q: 'Do you do groom makeup?',
     a: `Yes. ${describeService(SERVICES.find((s) => s.id === 'groom-makeover')!)} With a senior artist it is also ${formatPrice(SENIOR_ARTIST_SERVICES.find((s) => s.id === 'senior-groom-makeover')!.price)}.`,
+  },
+  {
+    q: 'How much is makeup for an engagement, house warming or half saree function?',
+    a: `${FUNCTIONS_PRICE_LIST} ${TRAVEL_POLICY[0]}.`,
+  },
+  {
+    q: 'How much is makeup and hair for a birthday party or another party?',
+    a: `${PARTIES_PRICE_LIST} ${TRAVEL_POLICY[0]}.`,
   },
   {
     q: 'Do you travel? Do you do destination weddings? Are there travel charges? Where is Deepika based?',
@@ -184,8 +207,15 @@ export function buildKnowledge(): KnowledgeChunk[] {
 /** Class inquiries can be saved too, although classes have no published price. */
 export const CLASS_INQUIRY = 'Makeup Class';
 
-/** Everything a customer can book, using the same names as the website's booking form. */
-export const BOOKABLE_SERVICES = [...ALL_SERVICES.map(bookingName), CLASS_INQUIRY];
+/** Prices Deepika quotes for engagements, house warmings, half saree functions and parties. */
+const OCCASION_PRICES = [...FUNCTION_PRICES, ...PARTY_PRICES];
+const bookedAs = (prices: OccasionPrice[]) => prices.map((q) => `"${q.bookingName}"`).join(', ');
+
+/**
+ * Everything a customer can book: the website booking form's names (the price lists), plus the occasions quoted on
+ * WhatsApp.
+ */
+export const BOOKABLE_SERVICES = [...ALL_SERVICES.map(bookingName), ...OCCASION_PRICES.map((q) => q.bookingName), CLASS_INQUIRY];
 
 /**
  * The core business facts in one compact block. The WhatsApp assistant gets it with every question, so answers
@@ -203,6 +233,8 @@ export function businessFacts(): string {
     '',
     `Services (name, price, details). Services ending in "(Senior Artist)" are done by a senior artist; all others by ${B.artist} herself:`,
     ...ALL_SERVICES.map((s) => `- ${describeService(s)}`),
+    `- ${FUNCTIONS_PRICE_LIST} Saved with a booking request as ${bookedAs(FUNCTION_PRICES)}.`,
+    `- ${PARTIES_PRICE_LIST} Saved with a booking request as ${bookedAs(PARTY_PRICES)}.`,
     `- Exclusive bridal experience (with every bridal package): ${list(BRIDAL_PACKAGE.experience)}.`,
     `- ${CLASS_INQUIRY}: ${B.artist} teaches makeup classes (${B.certification}). Class details and fees are not published: the customer should ask ${B.artist}.`,
     `Deepika's personal recommendation: ${BRIDAL_PACKAGE.recommendation}`,

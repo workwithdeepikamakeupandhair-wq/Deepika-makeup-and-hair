@@ -31,8 +31,9 @@ import { inBackground } from './background.js';
 import { getDb, pool } from './db.js';
 import { BOOKABLE_SERVICES, businessFacts } from './knowledge.js';
 import { sourceFromAdUrl } from './leads.js';
-import { buildWhatsAppSystemPrompt, completeChatWithTools, openai, OPENAI_MODEL, type ChatTool } from './llm.js';
+import { buildWhatsAppSystemPrompt, completeChatWithTools, NO_REPLY, openai, OPENAI_MODEL, type ChatTool } from './llm.js';
 import { chatStore as chats, type ChatInfo } from './whatsappChats.js';
+import { QUOTATIONS, QUOTE_OCCASIONS, WELCOME_MESSAGE, type QuoteOccasion } from './whatsappQuotes.js';
 
 const LOG = '[whatsapp]';
 
@@ -209,6 +210,15 @@ function toWhatsAppText(text: string): string {
   return out.length > MAX_REPLY_CHARS ? `${out.slice(0, MAX_REPLY_CHARS - 1)}…` : out;
 }
 
+const GREETING_WORDS = new Set(['hello', 'namaste', 'namaskar', 'namaskaram', 'vanakkam', 'good', 'morning', 'afternoon', 'evening', 'there', 'mam', 'madam', 'sir', 'ji', 'deepika', 'team']);
+const GREETING_WORD_RE = /^(h+i+|h+a+i+|h+e+y+|h+e+l+o+|h+l+o+)$/;
+
+/** A message that only says hello ("Hi", "hello madam 🙏"): the welcome message is the whole reply. */
+function isGreeting(message: string): boolean {
+  const words = message.toLowerCase().replace(/[^\p{L}\s]/gu, ' ').split(/\s+/).filter(Boolean);
+  return words.length > 0 && words.length <= 5 && words.every((w) => GREETING_WORDS.has(w) || GREETING_WORD_RE.test(w));
+}
+
 // ---------- Booking requests ----------
 
 const text = (value: unknown, max: number) => (typeof value === 'string' ? value.trim().slice(0, max) : '');
@@ -287,6 +297,8 @@ async function saveBookingRequest(waId: string, chat: ChatInfo, args: Record<str
 interface Turn {
   handoff: boolean;
   savedRequest?: string;
+  /** Quotations to send word for word, each as its own message before the reply (send_quotation). */
+  quotes: string[];
   /** How long the knowledge search and the language model took, for the log. */
   searchMs?: number;
   aiMs?: number;
@@ -365,6 +377,32 @@ async function saveHandoffLead(waId: string, chat: ChatInfo, messages: ChatMessa
 function toolsFor(waId: string, chat: ChatInfo, messages: ChatMessage[], turn: Turn): Record<string, ChatTool> {
   return {
     check_availability: checkAvailabilityTool(`${LOG} ${who(waId)}`),
+    send_quotation: {
+      definition: {
+        type: 'function',
+        function: {
+          name: 'send_quotation',
+          description: `Send the customer ${B.artist}'s quotation for their occasion. It goes to them word for word, as its own message just before your reply. Occasions: ${Object.entries(QUOTE_OCCASIONS)
+            .map(([occasion, meaning]) => `${occasion} = ${meaning}`)
+            .join('; ')}.`,
+          strict: true,
+          parameters: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['occasion'],
+            properties: { occasion: { type: 'string', enum: Object.keys(QUOTE_OCCASIONS), description: 'What they need makeup for.' } },
+          },
+        },
+      },
+      run: async (args) => {
+        const occasion = text(args.occasion, 40);
+        if (!Object.hasOwn(QUOTATIONS, occasion)) return { ok: false, error: `occasion must be one of: ${Object.keys(QUOTE_OCCASIONS).join(', ')}` };
+        const quote = QUOTATIONS[occasion as QuoteOccasion];
+        if (!turn.quotes.includes(quote)) turn.quotes.push(quote);
+        console.log(`${LOG} ${who(waId)}: sending the ${occasion} quotation`);
+        return { ok: true, note: "The quotation will be sent just before your reply. Don't repeat its prices or details in your reply." };
+      },
+    },
     save_booking_request: {
       definition: {
         type: 'function',
@@ -478,9 +516,16 @@ function within<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
   return Promise.race([promise, late]).finally(() => clearTimeout(timer));
 }
 
-/** Writes the reply to `messages`: the stored conversation, ending with the customer's latest message(s). */
-async function answer(waId: string, chat: ChatInfo, messages: ChatMessage[]): Promise<{ reply: string; turn: Turn }> {
-  const turn: Turn = { handoff: false };
+/** The model's reply when it has nothing to add (e.g. "NO_REPLY" or "NO_REPLY."). */
+const NO_REPLY_RE = new RegExp(`^\\W*${NO_REPLY}\\W*$`);
+
+/**
+ * Writes the reply to `messages`: the stored conversation, ending with the customer's latest message(s). `welcomed`:
+ * Deepika's welcome message has just been sent as the first reply. The reply is empty when there's nothing to add to
+ * the welcome or to the quotations (`turn.quotes`), which are sent before it.
+ */
+async function answer(waId: string, chat: ChatInfo, messages: ChatMessage[], welcomed: boolean): Promise<{ reply: string; turn: Turn }> {
+  const turn: Turn = { handoff: false, quotes: [] };
   const searchStarted = Date.now();
   const search = retrieve(messages).catch((err) => {
     console.error(`${LOG} knowledge search failed:`, err instanceof Error ? err.message : err);
@@ -504,6 +549,7 @@ async function answer(waId: string, chat: ChatInfo, messages: ChatMessage[]): Pr
     canSaveBookings: Boolean(pool),
     sharedNumber: SHARED_NUMBER,
     reachDeepika: REACH_DEEPIKA,
+    welcomed,
   });
   const script = scriptCheck(messages);
   const aiStarted = Date.now();
@@ -515,7 +561,11 @@ async function answer(waId: string, chat: ChatInfo, messages: ChatMessage[]): Pr
       accept: script.accept,
       cacheKey: PROMPT_CACHE_KEY,
     });
-    if (reply) return { reply: script.accept(reply) ? reply : script.clean(reply), turn };
+    if (NO_REPLY_RE.test(reply)) {
+      if (welcomed || turn.quotes.length) return { reply: '', turn };
+    } else if (reply) {
+      return { reply: script.accept(reply) ? reply : script.clean(reply), turn };
+    }
   } catch (err) {
     console.error(`${LOG} OpenAI request failed (${OPENAI_MODEL}):`, err instanceof Error ? err.message : err);
   } finally {
@@ -526,6 +576,8 @@ async function answer(waId: string, chat: ChatInfo, messages: ChatMessage[]): Pr
     return { reply: `Thank you! Your booking request #${turn.savedRequest} has been sent to ${B.artist}. She'll personally confirm availability and the quote, usually within 24 hours.`, turn };
   }
   if (turn.handoff) return { reply: HANDOFF_REPLY, turn };
+  // The welcome message has gone out, or a quotation will: better that alone than a guessed answer
+  if (welcomed || turn.quotes.length) return { reply: '', turn };
   // The search has had more time by now
   return { reply: searchAnswerForWhatsApp((await within(search, SEARCH_BUDGET_MS)) ?? retrieved), turn };
 }
@@ -583,17 +635,32 @@ async function replyTo(waId: string, latestId: number, transport: WhatsAppTransp
 
     const question = waiting.map((m) => m.content).join('\n').slice(0, MAX_QUESTION_CHARS);
     const messages: ChatMessage[] = [...history, { role: 'user', content: question }];
+
+    // Deepika's welcome message is the first reply in every chat, sent straight away (with the buttons on Meta)
     const firstReply = !history.some((m) => m.role === 'assistant');
-    const { reply, turn } = await answer(waId, chat, messages);
-    const body = toWhatsAppText(reply);
+    let settles = answered;
+    if (firstReply) {
+      await transport.send(waId, WELCOME_MESSAGE, true);
+      await chats.addReply(waId, WELCOME_MESSAGE, answered);
+      settles = [];
+      if (isGreeting(question)) {
+        console.log(`${LOG} welcomed ${who(waId)} via ${transport.name}`);
+        return;
+      }
+    }
+
+    const { reply, turn } = await answer(waId, chat, messages, firstReply);
     // Coexistence: Deepika may have replied from her phone while the answer was being written
     if (SHARED_NUMBER && Date.now() < (await chats.pausedUntil(waId))) return;
-    await transport.send(waId, body, firstReply && !turn.handoff && !turn.savedRequest);
-    await chats.addReply(waId, body, answered);
+    // Quotations first, word for word, then the reply (empty when there's nothing to add)
+    const parts = [...turn.quotes, ...(reply ? [toWhatsAppText(reply)] : [])];
+    for (const part of parts) await transport.send(waId, part, false);
+    if (parts.length) await chats.addReply(waId, parts.join('\n\n'), settles);
     // Coexistence: Deepika takes over this chat. Own number: nobody else answers here, so the bot keeps helping.
     if (turn.handoff && SHARED_NUMBER) await pauseBot(waId);
     const took = `${seconds(Date.now() - started)} after the ${seconds(GATHER_MS)} wait for follow-ups (search ${seconds(turn.searchMs)}, AI ${seconds(turn.aiMs)})`;
-    console.log(`${LOG} replied to ${who(waId)} via ${transport.name} ${took}${turn.savedRequest ? ` (booking request #${turn.savedRequest})` : ''}${turn.handoff ? ' and handed over to Deepika' : ''}`);
+    const what = [firstReply && 'welcome', turn.quotes.length && `${turn.quotes.length} quotation(s)`, reply && 'reply'].filter(Boolean).join(' + ');
+    console.log(`${LOG} sent ${what || 'nothing more'} to ${who(waId)} via ${transport.name} ${took}${turn.savedRequest ? ` (booking request #${turn.savedRequest})` : ''}${turn.handoff ? ' and handed over to Deepika' : ''}`);
   } catch (err) {
     console.error(`${LOG} could not reply to ${who(waId)}:`, err instanceof Error ? err.message : err);
   } finally {

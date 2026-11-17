@@ -166,7 +166,16 @@ export default function PricesPage() {
                             PRICE_TIERS[i].id === tierId ? 'text-[#9E7D53]' : 'text-[#A89F93]'
                           }`}
                         >
-                          {s ? formatPrice(s.price) : <span aria-label="Not listed">—</span>}
+                          {s ? (
+                            <>
+                              {formatPrice(s.price)}
+                              {s.perPerson && (
+                                <span className="block font-sans text-[10px] uppercase tracking-wider">per person</span>
+                              )}
+                            </>
+                          ) : (
+                            <span aria-label="Not listed">—</span>
+                          )}
                         </td>
                       ))}
                     </tr>

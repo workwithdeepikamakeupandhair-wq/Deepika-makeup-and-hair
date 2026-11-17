@@ -3,7 +3,7 @@
  * step), and the questions the pre-written email asks for each one (see serviceInquiryEmail in inquiryEmail.ts).
  * Built from both price lists: Deepika's and the senior artist's.
  */
-import { bookingName, formatPrice, PRICE_TIERS, ServiceItem } from './portfolioData';
+import { bookingName, formatServicePrice, PRICE_TIERS, ServiceItem } from './portfolioData';
 
 export interface BookingService {
   /** Saved with the booking and used in the email subject: bookingName() of the service. */
@@ -72,7 +72,7 @@ export const BOOKING_GROUPS: { label: string; options: BookingService[] }[] = PR
   label: tier.label,
   options: tier.services.map((s) => ({
     value: bookingName(s),
-    label: `${s.title} · ${formatPrice(s.price)}`,
+    label: `${s.title} · ${formatServicePrice(s)}`,
     ...emailFor(s),
   })),
 }));

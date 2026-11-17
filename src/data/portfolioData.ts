@@ -32,6 +32,8 @@ export interface ServiceItem {
   category: 'bridal' | 'family' | 'single';
   /** US dollars */
   price: number;
+  /** The price is for each person (confirmed by Deepika for the non-bridal look) */
+  perPerson?: boolean;
   /** e.g. "Most Recommended" */
   badge?: string;
   /** Who it is for, shown under the title */
@@ -177,6 +179,7 @@ export const SERVICES: ServiceItem[] = [
     title: "Non-Bridal (Family Glam)",
     category: "family",
     price: 300,
+    perPerson: true,
     image: "/images/portfolio/svc-party.jpg",
     forWhom: "For cousins, bridesmaids, family members, aunts, wedding guests & mothers",
     features: [
@@ -264,6 +267,7 @@ export const SENIOR_ARTIST_SERVICES: ServiceItem[] = [
     artist: "senior",
     category: "family",
     price: 300,
+    perPerson: true,
     forWhom: "For cousins, mothers, aunts, bridesmaids, family members & wedding guests",
     features: [
       "Soft glam / polished luxury finish",
@@ -298,6 +302,39 @@ export const SEPARATE_CHARGES_IMAGE = "/images/portfolio/svc-birthday.jpg";
 
 /** "$650" */
 export const formatPrice = (usd: number) => `$${usd}`;
+
+/** "$650", or "$300 per person" for a per-person price */
+export const formatServicePrice = (s: Pick<ServiceItem, 'price' | 'perPerson'>) =>
+  `${formatPrice(s.price)}${s.perPerson ? ' per person' : ''}`;
+
+/** A price Deepika quotes on WhatsApp for an occasion other than a wedding (not on the prices page). */
+export interface OccasionPrice {
+  title: string;
+  price: number;
+  perPerson?: boolean;
+  /** What comes with it, e.g. "One hairstyle" */
+  includes?: string[];
+  /** Saved with a booking request, e.g. "Party HD Makeup + Hair" */
+  bookingName: string;
+}
+
+/** Deepika's quote for these occasions (18 Nov 2026), with Deepika herself. */
+export const FUNCTION_OCCASIONS = ["Engagement", "House Warming", "Half Saree Function"];
+export const FUNCTION_PRICES: OccasionPrice[] = [
+  {
+    title: "HD Makeup",
+    price: 500,
+    includes: ["One hairstyle", "One saree draping"],
+    bookingName: "HD Makeup (Engagement / House Warming / Half Saree Function)",
+  },
+];
+
+/** Deepika's quote for birthday parties and other parties (18 Nov 2026): per person, with Deepika herself. */
+export const PARTY_PRICES: OccasionPrice[] = [
+  { title: "Basic Makeup + Hair", price: 350, perPerson: true, bookingName: "Party Basic Makeup + Hair" },
+  { title: "HD Makeup + Hair", price: 450, perPerson: true, bookingName: "Party HD Makeup + Hair" },
+  { title: "Advanced Makeup + Hair", price: 500, perPerson: true, bookingName: "Party Advanced Makeup + Hair" },
+];
 
 /** What comes with every bridal package (HD, Advanced and Airbrush), from the price list. */
 export const BRIDAL_PACKAGE = {
