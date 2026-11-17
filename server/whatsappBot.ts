@@ -22,9 +22,10 @@
  * what lets the assistant remember the chat: earlier questions, the date and details already given, and that it has
  * already welcomed the customer. Without a database the conversations are kept in memory instead.
  */
+import type { ChatCompletionMessageParam } from 'openai/resources';
 import { SERVICE_NOT_SPECIFIED } from '../src/data/leads.js';
 import { BUSINESS_INFO as B, WHATSAPP_CONTACTS } from '../src/data/portfolioData.js';
-import { retrieve, searchOnlyAnswer, type ChatMessage } from './assistant.js';
+import { retrieve, searchOnlyAnswer, type ChatMessage, type Retrieved } from './assistant.js';
 import { assistantStatusOf, checkAvailabilityTool, isIsoDate, todayInAtlanta } from './availability.js';
 import { inBackground } from './background.js';
 import { getDb, pool } from './db.js';
@@ -46,6 +47,14 @@ const REACH_DEEPIKA = `message ${B.artist} on WhatsApp at ${DIRECT_WHATSAPP}, or
 
 /** Wait this long after a message for more ("hi" … "how much for bridal?") and answer them together. */
 const GATHER_MS = 1500;
+/**
+ * Longest a reply waits for the knowledge search. On a running server it takes well under 100 ms, but a freshly
+ * started Vercel instance first has to download and load the search model, which takes seconds. The reply then goes
+ * ahead without the extra search results: the business facts (services, prices, FAQs) are always in the prompt.
+ */
+const SEARCH_BUDGET_MS = 1000;
+/** Every WhatsApp reply starts with the same prompt, so they share one place in OpenAI's prompt cache. */
+const PROMPT_CACHE_KEY = 'dmh-whatsapp-assistant';
 /** Customer messages older than this (e.g. redelivered after downtime) are left for Deepika. */
 const MAX_MESSAGE_AGE_MS = 10 * 60_000;
 /** Earlier messages the model sees: plenty to collect a booking request (name, service, date, place, people, confirmation). */
@@ -161,6 +170,9 @@ export const who = (waId: string) => `…${waId.slice(-4)}`;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** For the logs, e.g. "1.8 s"; "-" when not measured. */
+const seconds = (ms: number | undefined) => (ms === undefined ? '-' : `${(ms / 1000).toFixed(1)} s`);
+
 /** Webhooks can be delivered more than once (the database also catches a redelivery to another instance). */
 function alreadySeen(id: string): boolean {
   if (seenMessageIds.has(id)) return true;
@@ -275,6 +287,9 @@ async function saveBookingRequest(waId: string, chat: ChatInfo, args: Record<str
 interface Turn {
   handoff: boolean;
   savedRequest?: string;
+  /** How long the knowledge search and the language model took, for the log. */
+  searchMs?: number;
+  aiMs?: number;
 }
 
 /**
@@ -451,14 +466,36 @@ function searchAnswerForWhatsApp(retrieved: Awaited<ReturnType<typeof retrieve>>
   return unsuitable.test(found) ? FALLBACK : found;
 }
 
+/** Search results to answer without (the search failed, or wasn't ready in time). */
+const NO_SEARCH_RESULTS: Retrieved = { context: [], latest: [] };
+
+/** `promise`'s value, or undefined if it isn't ready within `ms`. */
+function within<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
+  let timer: NodeJS.Timeout | undefined;
+  const late = new Promise<undefined>((resolve) => {
+    timer = setTimeout(() => resolve(undefined), ms);
+  });
+  return Promise.race([promise, late]).finally(() => clearTimeout(timer));
+}
+
 /** Writes the reply to `messages`: the stored conversation, ending with the customer's latest message(s). */
 async function answer(waId: string, chat: ChatInfo, messages: ChatMessage[]): Promise<{ reply: string; turn: Turn }> {
   const turn: Turn = { handoff: false };
-  const retrieved = await retrieve(messages);
-  if (!openai) return { reply: searchAnswerForWhatsApp(retrieved), turn };
+  const searchStarted = Date.now();
+  const search = retrieve(messages).catch((err) => {
+    console.error(`${LOG} knowledge search failed:`, err instanceof Error ? err.message : err);
+    return NO_SEARCH_RESULTS;
+  });
+  // Without the language model the search result is the answer, so it is always waited for
+  if (!openai) return { reply: searchAnswerForWhatsApp(await search), turn };
+
+  const found = await within(search, SEARCH_BUDGET_MS);
+  turn.searchMs = Date.now() - searchStarted;
+  if (!found) console.log(`${LOG} ${who(waId)}: search not ready after ${SEARCH_BUDGET_MS} ms (search model still loading on a new server instance); answering from the business facts`);
+  const retrieved = found ?? NO_SEARCH_RESULTS;
 
   const date = todayInAtlanta();
-  const system = buildWhatsAppSystemPrompt({
+  const [rules, thisChat] = buildWhatsAppSystemPrompt({
     facts: FACTS,
     context: retrieved.context,
     todayLong: date.long,
@@ -469,23 +506,28 @@ async function answer(waId: string, chat: ChatInfo, messages: ChatMessage[]): Pr
     reachDeepika: REACH_DEEPIKA,
   });
   const script = scriptCheck(messages);
+  const aiStarted = Date.now();
   try {
-    const reply = await completeChatWithTools(
-      [{ role: 'system', content: system }, ...messages],
-      toolsFor(waId, chat, messages, turn),
-      AbortSignal.timeout(60_000),
-      script.accept,
-    );
+    // Two system messages: the rules are the same for everyone (cached by OpenAI), this chat's details come after
+    const prompt: ChatCompletionMessageParam[] = [{ role: 'system', content: rules }, { role: 'system', content: thisChat }, ...messages];
+    const reply = await completeChatWithTools(prompt, toolsFor(waId, chat, messages, turn), {
+      signal: AbortSignal.timeout(60_000),
+      accept: script.accept,
+      cacheKey: PROMPT_CACHE_KEY,
+    });
     if (reply) return { reply: script.accept(reply) ? reply : script.clean(reply), turn };
   } catch (err) {
     console.error(`${LOG} OpenAI request failed (${OPENAI_MODEL}):`, err instanceof Error ? err.message : err);
+  } finally {
+    turn.aiMs = Date.now() - aiStarted;
   }
   // The model failed after a tool may already have run: still tell the customer what happened
   if (turn.savedRequest) {
     return { reply: `Thank you! Your booking request #${turn.savedRequest} has been sent to ${B.artist}. She'll personally confirm availability and the quote, usually within 24 hours.`, turn };
   }
   if (turn.handoff) return { reply: HANDOFF_REPLY, turn };
-  return { reply: searchAnswerForWhatsApp(retrieved), turn };
+  // The search has had more time by now
+  return { reply: searchAnswerForWhatsApp((await within(search, SEARCH_BUDGET_MS)) ?? retrieved), turn };
 }
 
 /**
@@ -512,7 +554,7 @@ async function claimReplying(waId: string): Promise<string | null> {
   for (;;) {
     const token = await chats.claimReplying(waId, REPLY_CLAIM_MS);
     if (token || Date.now() > giveUpAt) return token;
-    await sleep(1000);
+    await sleep(500);
   }
 }
 
@@ -521,6 +563,7 @@ async function claimReplying(waId: string): Promise<string | null> {
  * call was started for: if an even newer one is waiting, the call started for that one answers them all instead.
  */
 async function replyTo(waId: string, latestId: number, transport: WhatsAppTransport) {
+  const started = Date.now();
   const token = await claimReplying(waId);
   if (!token) {
     console.warn(`${LOG} ${who(waId)}: another reply in this chat took too long; this message will be answered with the next one`);
@@ -549,7 +592,8 @@ async function replyTo(waId: string, latestId: number, transport: WhatsAppTransp
     await chats.addReply(waId, body, answered);
     // Coexistence: Deepika takes over this chat. Own number: nobody else answers here, so the bot keeps helping.
     if (turn.handoff && SHARED_NUMBER) await pauseBot(waId);
-    console.log(`${LOG} replied to ${who(waId)} via ${transport.name}${turn.savedRequest ? ` (booking request #${turn.savedRequest})` : ''}${turn.handoff ? ' and handed over to Deepika' : ''}`);
+    const took = `${seconds(Date.now() - started)} after the ${seconds(GATHER_MS)} wait for follow-ups (search ${seconds(turn.searchMs)}, AI ${seconds(turn.aiMs)})`;
+    console.log(`${LOG} replied to ${who(waId)} via ${transport.name} ${took}${turn.savedRequest ? ` (booking request #${turn.savedRequest})` : ''}${turn.handoff ? ' and handed over to Deepika' : ''}`);
   } catch (err) {
     console.error(`${LOG} could not reply to ${who(waId)}:`, err instanceof Error ? err.message : err);
   } finally {
@@ -617,13 +661,14 @@ async function handleMessage(transport: WhatsAppTransport, m: InboundMessage) {
   const id = await chats.addCustomerMessage(waId, content, { messageId: m.id, waiting: action === 'answer' });
   if (id === null) return; // delivered before, to another server instance
 
+  // Blue ticks and "typing…" straight away, before anything else
+  if (action !== 'context') transport.markReadAndTyping(m.id);
   if (ad) {
     await saveAdLead(waId, chat, ad, adSource!).catch((err) =>
       console.error(`${LOG} could not save ad lead:`, err instanceof Error ? err.message : err),
     );
   }
   if (action === 'context') return;
-  transport.markReadAndTyping(m.id);
   if (action === 'handover') return handOver(waId, chat, transport);
   if (action === 'media_reply') {
     // No language model: a fixed reply
