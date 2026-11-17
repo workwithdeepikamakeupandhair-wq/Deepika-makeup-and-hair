@@ -63,6 +63,10 @@ export const BUSINESS_INFO = {
   // WhatsApp links need the full international number (country code, no +)
   whatsappUrl: "https://wa.me/19804977720",
   whatsappSecondaryUrl: "https://wa.me/919113585961",
+  // The AI assistant's own WhatsApp number (Twilio). The website's WhatsApp buttons open a chat with it; Deepika's
+  // numbers above stay for calls and for when the assistant passes a customer to her personally.
+  assistantWhatsapp: "+1 938-946-4851",
+  assistantWhatsappUrl: "https://wa.me/19389464851",
   // The public website (the assistants share links to its pages, e.g. the price list)
   website: "https://www.deepikamakeupandhair.com",
   // Bridal inquiries by email land here (the /bridal-inquiry page and every "Email" button open a pre-written mail to it)

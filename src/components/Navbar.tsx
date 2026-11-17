@@ -5,9 +5,9 @@
 
 import React, { useState, useEffect } from 'react';
 import { Menu, X, Phone } from 'lucide-react';
-import { BUSINESS_INFO, WHATSAPP_CONTACTS } from '../data/portfolioData';
+import { BUSINESS_INFO } from '../data/portfolioData';
+import { ASSISTANT_WHATSAPP_CHAT, WhatsAppButton } from './WhatsAppButton';
 import { WhatsAppIcon } from './WhatsAppIcon';
-import { WhatsAppMenu } from './WhatsAppMenu';
 
 interface NavbarProps {
   onOpenBooking: () => void;
@@ -68,7 +68,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenBooking }) => {
 
           {/* Zone 3: 1 Primary Action */}
           <div className="flex items-center gap-3 shrink-0">
-            <WhatsAppMenu
+            <WhatsAppButton
               className="hidden sm:block"
               buttonClassName="inline-flex items-center justify-center w-9 h-9 rounded-full border border-[#E7DFD6] text-[#25D366] hover:bg-[#25D366] hover:border-[#25D366] hover:text-white transition-colors"
               iconClassName="w-[18px] h-[18px]"
@@ -146,18 +146,15 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenBooking }) => {
                   <Phone className="w-3.5 h-3.5 text-[#C5A880]" />
                   <span>Call {BUSINESS_INFO.phoneSecondaryCountry}: {BUSINESS_INFO.phoneSecondary}</span>
                 </a>
-                {WHATSAPP_CONTACTS.map((c) => (
-                  <a
-                    key={c.country}
-                    href={c.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="flex items-center gap-2 text-[#9E7D53] hover:underline"
-                  >
-                    <WhatsAppIcon className="w-3.5 h-3.5" />
-                    <span>WhatsApp {c.country}: {c.number}</span>
-                  </a>
-                ))}
+                <a
+                  href={ASSISTANT_WHATSAPP_CHAT}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-2 text-[#9E7D53] hover:underline"
+                >
+                  <WhatsAppIcon className="w-3.5 h-3.5" />
+                  <span>Chat with us on WhatsApp</span>
+                </a>
               </div>
             </div>
           </div>

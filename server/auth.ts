@@ -97,9 +97,14 @@ export interface SessionUser {
   email: string;
 }
 
-declare module 'express-serve-static-core' {
-  interface Request {
-    adminUser?: SessionUser;
+// Through the global Express namespace (not 'express-serve-static-core'), so it also type-checks on Vercel, where the
+// API project installs no Express type packages
+declare global {
+  // eslint-disable-next-line @typescript-eslint/no-namespace
+  namespace Express {
+    interface Request {
+      adminUser?: SessionUser;
+    }
   }
 }
 

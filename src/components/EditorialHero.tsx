@@ -5,7 +5,7 @@
 
 import React from 'react';
 import { BUSINESS_INFO } from '../data/portfolioData';
-import { WhatsAppMenu } from './WhatsAppMenu';
+import { WhatsAppButton } from './WhatsAppButton';
 
 interface EditorialHeroProps {
   onOpenBooking: () => void;
@@ -104,7 +104,7 @@ export const EditorialHero: React.FC<EditorialHeroProps> = ({ onOpenBooking }) =
 
           {/* Round Icon Buttons */}
           <div className="flex items-center gap-2.5">
-            <WhatsAppMenu
+            <WhatsAppButton
               buttonClassName="w-10 h-10 rounded-full bg-[#25D366] text-white shadow-lg hover:bg-[#1EBE5D] hover:scale-105 flex items-center justify-center transition-all"
               iconClassName="w-5 h-5"
             />
