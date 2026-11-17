@@ -13,6 +13,7 @@ import { openai, OPENAI_MODEL } from './llm.js';
 import { twilioWhatsAppEnabled, twilioWhatsAppPath } from './routes/twilioWhatsapp.js';
 import { metaPhoneNumberId, metaWhatsAppEnabled, missingMetaWhatsAppSettings } from './routes/whatsapp.js';
 import { whatsappMode } from './whatsappBot.js';
+import { chatStorage } from './whatsappChats.js';
 
 const PORT = Number(process.env.PORT) || 4000;
 const distDir = path.resolve(import.meta.dirname, '..', 'dist');
@@ -34,6 +35,9 @@ const server = app.listen(PORT, () => {
     console.warn(`${LOG} whatsapp: Meta connection off, missing ${missingMetaWhatsAppSettings.join(', ')} in .env`);
   }
   if (twilioWhatsAppEnabled) console.log(`${LOG} whatsapp: bot on via Twilio, webhook at ${twilioWhatsAppPath}`);
+  if (metaWhatsAppEnabled || twilioWhatsAppEnabled) {
+    console.log(`${LOG} whatsapp: conversations kept in ${chatStorage === 'database' ? 'the database' : 'memory (set DATABASE_URL to keep them)'}`);
+  }
   if (fs.existsSync(distDir)) console.log(`${LOG} serving website from ${distDir}`);
   warmUpEmbeddings();
 });

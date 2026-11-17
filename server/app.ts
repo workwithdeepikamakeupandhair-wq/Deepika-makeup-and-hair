@@ -16,6 +16,7 @@ import { chatRouter } from './routes/chat.js';
 import { metaLeadsRouter, metaLeadsStatus } from './routes/metaLeads.js';
 import { twilioWhatsAppEnabled, twilioWhatsAppPath, twilioWhatsAppRouter } from './routes/twilioWhatsapp.js';
 import { metaWhatsAppEnabled, whatsappRouter } from './routes/whatsapp.js';
+import { chatStorage } from './whatsappChats.js';
 
 export const SERVICE_NAME = 'DMH API';
 export const LOG = '[dmh-api]';
@@ -55,6 +56,8 @@ export function createApp({ websiteDir }: AppOptions = {}): Express {
       chat: openai ? `openai:${OPENAI_MODEL}` : 'search-only',
       whatsapp: metaWhatsAppEnabled || twilioWhatsAppEnabled ? 'enabled' : 'not_configured',
       whatsappConnections: [...(metaWhatsAppEnabled ? ['meta'] : []), ...(twilioWhatsAppEnabled ? ['twilio'] : [])],
+      // Where the WhatsApp assistant keeps conversations: 'database' (survives restarts and new instances) or 'memory'
+      whatsappMemory: chatStorage,
       metaLeads: metaLeadsStatus,
       // The caller's own IP as the API sees it. Behind a proxy (the website forwarding /api here) it must still be
       // the visitor's IP, or the per-visitor rate limits would be shared by everyone.

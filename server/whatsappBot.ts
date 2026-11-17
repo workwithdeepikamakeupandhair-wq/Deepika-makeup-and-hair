@@ -17,9 +17,10 @@
  *   using in the WhatsApp Business app. She sees every chat; when she replies from the app, the bot steps back from
  *   that chat for WHATSAPP_HUMAN_TAKEOVER_HOURS so the two never talk over each other.
  *
- * State (chat history, pauses, duplicate checks) is kept in memory: a restart only forgets recent context.
- * On Vercel that memory lasts only while a function instance stays warm, so after a quiet spell the bot starts
- * the conversation fresh (bookings are still saved in the database).
+ * Every conversation is saved in the database (server/whatsappChats.ts), and each reply is written from what is
+ * stored there. On Vercel each message can reach a different, freshly started instance with empty memory, so this is
+ * what lets the assistant remember the chat: earlier questions, the date and details already given, and that it has
+ * already welcomed the customer. Without a database the conversations are kept in memory instead.
  */
 import { SERVICE_NOT_SPECIFIED } from '../src/data/leads.js';
 import { BUSINESS_INFO as B, WHATSAPP_CONTACTS } from '../src/data/portfolioData.js';
@@ -30,6 +31,7 @@ import { getDb, pool } from './db.js';
 import { BOOKABLE_SERVICES, businessFacts } from './knowledge.js';
 import { sourceFromAdUrl } from './leads.js';
 import { buildWhatsAppSystemPrompt, completeChatWithTools, openai, OPENAI_MODEL, type ChatTool } from './llm.js';
+import { chatStore as chats, type ChatInfo } from './whatsappChats.js';
 
 const LOG = '[whatsapp]';
 
@@ -46,9 +48,18 @@ const REACH_DEEPIKA = `message ${B.artist} on WhatsApp at ${DIRECT_WHATSAPP}, or
 const GATHER_MS = 1500;
 /** Customer messages older than this (e.g. redelivered after downtime) are left for Deepika. */
 const MAX_MESSAGE_AGE_MS = 10 * 60_000;
-/** Enough turns to collect a booking request (name, service, date, place, people, confirmation). */
-const MAX_HISTORY = 20;
+/** Earlier messages the model sees: plenty to collect a booking request (name, service, date, place, people, confirmation). */
+const MAX_HISTORY = 30;
+/** Longest customer message kept, and longest question (messages sent together) the model answers. */
+const MAX_MESSAGE_CHARS = 1500;
+const MAX_QUESTION_CHARS = 2000;
 const MAX_REPLIES_PER_10_MIN = 15;
+/**
+ * One reply is written per chat at a time, even across server instances. A message that comes in meanwhile waits
+ * for that reply, then gets its own. The claim expires on its own if an instance dies while holding it.
+ */
+const REPLY_CLAIM_MS = 100_000;
+const REPLY_WAIT_MS = 45_000;
 /** Photos, voice notes and files are acknowledged at most this often per chat. */
 const MEDIA_ACK_EVERY_MS = 30 * 60_000;
 /** WhatsApp's limit for a text message body is 4096 characters (transports split further if they need to). */
@@ -64,6 +75,8 @@ const HANDOFF_REPLY = SHARED_NUMBER
   : `Of course! I've passed your number to ${B.artist}, and she'll contact you personally. To reach her right away, ${REACH_DEEPIKA}.`;
 /** Own number, when the hand-over couldn't be saved for Deepika. */
 const HANDOFF_DIRECT_REPLY = `Of course! To talk to ${B.artist} personally, please ${REACH_DEEPIKA}.`;
+/** How a tap on the "Talk to Deepika" button is saved in the conversation. */
+const TALK_TO_DEEPIKA = 'Talk to Deepika';
 
 /** What a tapped quick-reply button means, as the customer's message to the assistant (see the Meta transport). */
 export const BUTTON_MEANING: Record<string, string> = {
@@ -131,68 +144,47 @@ export interface InboundMessage {
 }
 
 // ---------- Chat state ----------
+// The conversation itself is in the database (whatsappChats.ts). This server instance only keeps its wait before
+// replying, so that messages sent in quick succession are answered together.
 
-interface Contact {
-  history: ChatMessage[];
-  lastActive: number;
-  /** The bot stays quiet in this chat until then, because Deepika is handling it. */
-  pausedUntil: number;
-  pending: string[];
+interface Waiting {
   timer?: NodeJS.Timeout;
   /** Ends the background wait for `timer` (it keeps a Vercel function alive until the reply is sent). */
-  timerDone?: () => void;
-  busy: boolean;
-  replyTimes: number[];
-  lastMediaAck: number;
-  profileName?: string;
-  /** Set when the chat started from a click-to-WhatsApp ad: 'instagram_ad' or 'facebook_ad'. */
-  adSource?: string;
-  /** Where replies go: the connection of the customer's latest message. */
-  transport?: WhatsAppTransport;
+  done?: () => void;
 }
 
-const contacts = new Map<string, Contact>();
+const waits = new Map<string, Waiting>();
 const seenMessageIds = new Map<string, number>();
 
 /** Logs only the last 4 digits of a phone number. */
 export const who = (waId: string) => `…${waId.slice(-4)}`;
 
-function contactFor(waId: string): Contact {
-  let c = contacts.get(waId);
-  if (!c) {
-    c = { history: [], lastActive: Date.now(), pausedUntil: 0, pending: [], busy: false, replyTimes: [], lastMediaAck: 0 };
-    contacts.set(waId, c);
-  }
-  return c;
-}
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-function remember(c: Contact, message: ChatMessage) {
-  c.history.push(message);
-  if (c.history.length > MAX_HISTORY) c.history.splice(0, c.history.length - MAX_HISTORY);
-}
-
-/** Webhooks can be delivered more than once. */
+/** Webhooks can be delivered more than once (the database also catches a redelivery to another instance). */
 function alreadySeen(id: string): boolean {
   if (seenMessageIds.has(id)) return true;
   seenMessageIds.set(id, Date.now());
   return false;
 }
 
-function pauseBot(c: Contact) {
-  c.pausedUntil = Date.now() + TAKEOVER_MS;
-  c.pending = [];
-  clearTimeout(c.timer);
-  c.timer = undefined;
-  c.timerDone?.();
-  c.timerDone = undefined;
+function cancelWait(waId: string) {
+  const w = waits.get(waId);
+  if (!w) return;
+  clearTimeout(w.timer);
+  w.done?.();
+  waits.delete(waId);
+}
+
+/** Coexistence: Deepika is handling the chat, so the bot stays quiet in it for a while. */
+async function pauseBot(waId: string) {
+  cancelWait(waId);
+  await chats.pause(waId, Date.now() + TAKEOVER_MS);
 }
 
 setInterval(() => {
   const now = Date.now();
   for (const [id, at] of seenMessageIds) if (now - at > FORGET_AFTER_MS) seenMessageIds.delete(id);
-  for (const [waId, c] of contacts) {
-    if (now - c.lastActive > FORGET_AFTER_MS && c.pausedUntil < now && !c.busy && !c.timer) contacts.delete(waId);
-  }
 }, 30 * 60_000).unref();
 
 /** WhatsApp shows *bold* and plain URLs; turn any stray markdown from the model into that. */
@@ -220,7 +212,7 @@ const CALENDAR_NOTE: Record<string, string> = {
  * click-to-WhatsApp ad in the last 30 days that doesn't say what they want yet.
  * The result tells the model the date's calendar status; a full or nearly full date is also noted for Deepika.
  */
-async function saveBookingRequest(waId: string, c: Contact, args: Record<string, unknown>) {
+async function saveBookingRequest(waId: string, chat: ChatInfo, args: Record<string, unknown>) {
   if (!pool) return { ok: false, error: `Booking requests can't be saved right now. Tell the customer ${B.artist} will reply personally.` };
 
   const fullName = text(args.full_name, 120);
@@ -274,7 +266,7 @@ async function saveBookingRequest(waId: string, c: Contact, args: Record<string,
     `INSERT INTO bookings (full_name, phone, email, service, event_date, event_location, party_size, notes, source, channel)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'whatsapp')
      RETURNING id`,
-    [fullName, phone, email || null, service, eventDate || null, eventLocation, partySize || null, notes || null, c.adSource ?? 'whatsapp'],
+    [fullName, phone, email || null, service, eventDate || null, eventLocation, partySize || null, notes || null, chat.adSource ?? 'whatsapp'],
   );
   console.log(`${LOG} new booking request #${rows[0].id} from ${who(waId)} for "${service}"`);
   return { ok: true, request_number: rows[0].id, ...calendar };
@@ -289,11 +281,9 @@ interface Turn {
  * A chat that starts from a click-to-WhatsApp ad is a lead straight away, even before any booking details.
  * One open lead per customer: a repeat ad click within 30 days reuses it.
  */
-async function saveAdLead(waId: string, c: Contact, referral: Referral) {
+async function saveAdLead(waId: string, chat: ChatInfo, referral: Referral, source: string) {
   if (!pool) return;
   const phone = `+${waId}`;
-  const source = sourceFromAdUrl(referral.source_url);
-  c.adSource = source;
   const db = getDb();
   const open = await db.query(
     `SELECT 1 FROM bookings WHERE channel = 'whatsapp' AND phone = $1 AND created_at > now() - interval '30 days'
@@ -308,7 +298,7 @@ async function saveAdLead(waId: string, c: Contact, referral: Referral) {
      ON CONFLICT (external_id) WHERE external_id IS NOT NULL DO NOTHING
      RETURNING id`,
     [
-      c.profileName || 'WhatsApp lead',
+      chat.profileName || 'WhatsApp lead',
       phone,
       SERVICE_NOT_SPECIFIED,
       `Started a WhatsApp chat from an ad${headline ? `: "${headline}"` : ''}.${referral.body ? `\nAd text: ${referral.body.slice(0, 500)}` : ''}`,
@@ -326,11 +316,11 @@ async function saveAdLead(waId: string, c: Contact, referral: Referral) {
  * recent messages in "What they told us") for her to contact. Adds to the customer's open WhatsApp lead if they have
  * one. Returns the lead number, or null without a database.
  */
-async function saveHandoffLead(waId: string, c: Contact, reason: string): Promise<string | null> {
+async function saveHandoffLead(waId: string, chat: ChatInfo, messages: ChatMessage[], reason: string): Promise<string | null> {
   if (!pool) return null;
   const phone = `+${waId}`;
-  const recent = c.history
-    .filter((m) => m.role === 'user')
+  const recent = messages
+    .filter((m) => m.role === 'user' && m.content !== TALK_TO_DEEPIKA)
     .slice(-4)
     .map((m) => `- ${m.content.slice(0, 300)}`)
     .join('\n');
@@ -351,13 +341,13 @@ async function saveHandoffLead(waId: string, c: Contact, reason: string): Promis
     `INSERT INTO bookings (full_name, phone, service, notes, source, channel)
      VALUES ($1, $2, $3, $4, $5, 'whatsapp')
      RETURNING id`,
-    [c.profileName || 'WhatsApp contact', phone, SERVICE_NOT_SPECIFIED, note, c.adSource ?? 'whatsapp'],
+    [chat.profileName || 'WhatsApp contact', phone, SERVICE_NOT_SPECIFIED, note, chat.adSource ?? 'whatsapp'],
   );
   console.log(`${LOG} ${who(waId)} asked for ${B.artist}; new lead #${rows[0].id}`);
   return rows[0].id;
 }
 
-function toolsFor(waId: string, c: Contact, turn: Turn): Record<string, ChatTool> {
+function toolsFor(waId: string, chat: ChatInfo, messages: ChatMessage[], turn: Turn): Record<string, ChatTool> {
   return {
     check_availability: {
       definition: {
@@ -407,7 +397,7 @@ function toolsFor(waId: string, c: Contact, turn: Turn): Record<string, ChatTool
         },
       },
       run: async (args) => {
-        const result = await saveBookingRequest(waId, c, args);
+        const result = await saveBookingRequest(waId, chat, args);
         if (result.ok && 'request_number' in result) turn.savedRequest = result.request_number;
         return result;
       },
@@ -434,7 +424,7 @@ function toolsFor(waId: string, c: Contact, turn: Turn): Record<string, ChatTool
         const reason = text(args.reason, 200);
         console.log(`${LOG} ${who(waId)} handed over to Deepika (${reason || 'no reason given'})`);
         if (SHARED_NUMBER) return { ok: true, note: `${B.artist} will reply personally in this chat. Tell the customer that, briefly.` };
-        const lead = await saveHandoffLead(waId, c, reason).catch((err) => {
+        const lead = await saveHandoffLead(waId, chat, messages, reason).catch((err) => {
           console.error(`${LOG} could not save the hand-over for ${who(waId)}:`, err instanceof Error ? err.message : err);
           return null;
         });
@@ -458,8 +448,8 @@ const MIXED_WORD = /[ऀ-෿][A-Za-z]|[A-Za-z][ऀ-෿]/;
  * rejected and written again; this checks it. A reply written mostly in an Indian script is a language choice, not
  * a glitch (e.g. answering Hinglish in Devanagari), and so is any reply to a customer who writes in one.
  */
-function scriptCheck(c: Contact) {
-  const writesIndic = c.history.some((m) => m.role === 'user' && INDIC.test(m.content));
+function scriptCheck(messages: ChatMessage[]) {
+  const writesIndic = messages.some((m) => m.role === 'user' && INDIC.test(m.content));
   const strayIndic = (reply: string) => {
     const indic = reply.match(/[ऀ-෿]/g)?.length ?? 0;
     const latin = reply.match(/[A-Za-z]/g)?.length ?? 0;
@@ -484,9 +474,10 @@ function searchAnswerForWhatsApp(retrieved: Awaited<ReturnType<typeof retrieve>>
   return unsuitable.test(found) ? FALLBACK : found;
 }
 
-async function answer(waId: string, c: Contact): Promise<{ reply: string; turn: Turn }> {
+/** Writes the reply to `messages`: the stored conversation, ending with the customer's latest message(s). */
+async function answer(waId: string, chat: ChatInfo, messages: ChatMessage[]): Promise<{ reply: string; turn: Turn }> {
   const turn: Turn = { handoff: false };
-  const retrieved = await retrieve(c.history);
+  const retrieved = await retrieve(messages);
   if (!openai) return { reply: searchAnswerForWhatsApp(retrieved), turn };
 
   const date = todayInAtlanta();
@@ -495,16 +486,16 @@ async function answer(waId: string, c: Contact): Promise<{ reply: string; turn: 
     context: retrieved.context,
     todayLong: date.long,
     todayIso: date.iso,
-    profileName: c.profileName,
+    profileName: chat.profileName,
     canSaveBookings: Boolean(pool),
     sharedNumber: SHARED_NUMBER,
     reachDeepika: REACH_DEEPIKA,
   });
-  const script = scriptCheck(c);
+  const script = scriptCheck(messages);
   try {
     const reply = await completeChatWithTools(
-      [{ role: 'system', content: system }, ...c.history],
-      toolsFor(waId, c, turn),
+      [{ role: 'system', content: system }, ...messages],
+      toolsFor(waId, chat, messages, turn),
       AbortSignal.timeout(60_000),
       script.accept,
     );
@@ -520,54 +511,72 @@ async function answer(waId: string, c: Contact): Promise<{ reply: string; turn: 
   return { reply: searchAnswerForWhatsApp(retrieved), turn };
 }
 
-function scheduleReply(waId: string, delay = GATHER_MS) {
-  const c = contactFor(waId);
-  clearTimeout(c.timer);
-  c.timerDone?.(); // the earlier wait is replaced by this one
-  const replied = new Promise<void>((resolve) => {
-    c.timerDone = resolve;
-    c.timer = setTimeout(() => {
-      c.timer = undefined;
-      c.timerDone = undefined;
-      replyTo(waId).finally(resolve);
-    }, delay);
+/**
+ * Replies after a short wait, so messages sent in quick succession get one answer. A newer message to this server
+ * instance restarts the wait; one that reaches another instance is caught in replyTo. Resolves once the reply is sent
+ * (or the wait was taken over by a newer message).
+ */
+function replyAfterWait(waId: string, latestId: number, transport: WhatsAppTransport): Promise<void> {
+  cancelWait(waId); // the earlier wait is replaced by this one
+  const w: Waiting = {};
+  waits.set(waId, w);
+  return new Promise<void>((resolve) => {
+    w.done = resolve;
+    w.timer = setTimeout(() => {
+      if (waits.get(waId) === w) waits.delete(waId);
+      replyTo(waId, latestId, transport).finally(resolve);
+    }, GATHER_MS);
   });
-  inBackground(replied, (err) => console.error(`${LOG} could not reply to ${who(waId)}:`, err));
 }
 
-async function replyTo(waId: string) {
-  const c = contactFor(waId);
-  if (c.busy) return scheduleReply(waId, 1000); // still answering the previous message
-  if (!c.pending.length || Date.now() < c.pausedUntil || !c.transport) return;
+/** Waits (up to REPLY_WAIT_MS) until no other reply is being written in this chat, and claims it. */
+async function claimReplying(waId: string): Promise<string | null> {
+  const giveUpAt = Date.now() + REPLY_WAIT_MS;
+  for (;;) {
+    const token = await chats.claimReplying(waId, REPLY_CLAIM_MS);
+    if (token || Date.now() > giveUpAt) return token;
+    await sleep(1000);
+  }
+}
 
-  const question = c.pending.join('\n').slice(0, 1500);
-  c.pending = [];
-  const firstReply = !c.history.some((m) => m.role === 'assistant');
-  remember(c, { role: 'user', content: question });
-
-  const now = Date.now();
-  c.replyTimes = c.replyTimes.filter((t) => now - t < 10 * 60_000);
-  if (c.replyTimes.length >= MAX_REPLIES_PER_10_MIN) {
-    console.warn(`${LOG} ${who(waId)} sent too many messages; not replying for a few minutes`);
+/**
+ * Answers the customer's waiting messages, from the conversation stored so far. `latestId` is the newest message this
+ * call was started for: if an even newer one is waiting, the call started for that one answers them all instead.
+ */
+async function replyTo(waId: string, latestId: number, transport: WhatsAppTransport) {
+  const token = await claimReplying(waId);
+  if (!token) {
+    console.warn(`${LOG} ${who(waId)}: another reply in this chat took too long; this message will be answered with the next one`);
     return;
   }
-
-  c.busy = true;
   try {
-    const { reply, turn } = await answer(waId, c);
+    const { chat, history, waiting, recentReplies } = await chats.conversation(waId, MAX_HISTORY);
+    // Already answered along with an earlier message, or a newer message is waiting and its own call answers both
+    if (!waiting.length || waiting[waiting.length - 1].id > latestId) return;
+    if (Date.now() < chat.pausedUntil) return;
+    const answered = waiting.map((m) => m.id);
+    if (recentReplies >= MAX_REPLIES_PER_10_MIN) {
+      console.warn(`${LOG} ${who(waId)} sent too many messages; not replying for a few minutes`);
+      await chats.settle(waId, answered);
+      return;
+    }
+
+    const question = waiting.map((m) => m.content).join('\n').slice(0, MAX_QUESTION_CHARS);
+    const messages: ChatMessage[] = [...history, { role: 'user', content: question }];
+    const firstReply = !history.some((m) => m.role === 'assistant');
+    const { reply, turn } = await answer(waId, chat, messages);
     const body = toWhatsAppText(reply);
-    // Deepika may have replied from her phone while the answer was being written
-    if (Date.now() < c.pausedUntil) return;
-    await c.transport.send(waId, body, firstReply && !turn.handoff && !turn.savedRequest);
-    c.replyTimes.push(Date.now());
-    remember(c, { role: 'assistant', content: body });
+    // Coexistence: Deepika may have replied from her phone while the answer was being written
+    if (SHARED_NUMBER && Date.now() < (await chats.pausedUntil(waId))) return;
+    await transport.send(waId, body, firstReply && !turn.handoff && !turn.savedRequest);
+    await chats.addReply(waId, body, answered);
     // Coexistence: Deepika takes over this chat. Own number: nobody else answers here, so the bot keeps helping.
-    if (turn.handoff && SHARED_NUMBER) pauseBot(c);
-    console.log(`${LOG} replied to ${who(waId)} via ${c.transport.name}${turn.savedRequest ? ` (booking request #${turn.savedRequest})` : ''}${turn.handoff ? ' and handed over to Deepika' : ''}`);
+    if (turn.handoff && SHARED_NUMBER) await pauseBot(waId);
+    console.log(`${LOG} replied to ${who(waId)} via ${transport.name}${turn.savedRequest ? ` (booking request #${turn.savedRequest})` : ''}${turn.handoff ? ' and handed over to Deepika' : ''}`);
   } catch (err) {
     console.error(`${LOG} could not reply to ${who(waId)}:`, err instanceof Error ? err.message : err);
   } finally {
-    c.busy = false;
+    await chats.releaseReplying(waId, token).catch((err) => console.error(`${LOG} could not release the reply claim for ${who(waId)}:`, err instanceof Error ? err.message : err));
   }
 }
 
@@ -575,25 +584,25 @@ async function replyTo(waId: string) {
  * "Talk to Deepika" button: no model needed. Coexistence: the bot pauses so Deepika can reply in this chat.
  * Own number: the customer is saved as a lead for Deepika and gets her direct WhatsApp and phone.
  */
-async function handOver(waId: string, c: Contact, transport: WhatsAppTransport) {
+async function handOver(waId: string, chat: ChatInfo, transport: WhatsAppTransport) {
   let reply = HANDOFF_REPLY;
   if (SHARED_NUMBER) {
-    pauseBot(c);
+    await pauseBot(waId);
   } else {
-    const lead = await saveHandoffLead(waId, c, 'tapped "Talk to Deepika"').catch((err) => {
-      console.error(`${LOG} could not save the hand-over for ${who(waId)}:`, err instanceof Error ? err.message : err);
-      return null;
-    });
+    const lead = await chats
+      .conversation(waId, MAX_HISTORY)
+      .then(({ history, waiting }) =>
+        saveHandoffLead(waId, chat, [...history, ...waiting.map((m) => ({ role: 'user' as const, content: m.content }))], 'tapped "Talk to Deepika"'),
+      )
+      .catch((err) => {
+        console.error(`${LOG} could not save the hand-over for ${who(waId)}:`, err instanceof Error ? err.message : err);
+        return null;
+      });
     if (!lead) reply = HANDOFF_DIRECT_REPLY;
   }
-  remember(c, { role: 'user', content: 'Talk to Deepika' });
-  try {
-    await transport.send(waId, reply, false);
-    remember(c, { role: 'assistant', content: reply });
-    console.log(`${LOG} ${who(waId)} tapped "Talk to Deepika"${SHARED_NUMBER ? '; bot paused in that chat' : ''}`);
-  } catch (err) {
-    console.error(`${LOG} could not reply to ${who(waId)}:`, err instanceof Error ? err.message : err);
-  }
+  await transport.send(waId, reply, false);
+  await chats.addReply(waId, reply, []);
+  console.log(`${LOG} ${who(waId)} tapped "Talk to Deepika"${SHARED_NUMBER ? '; bot paused in that chat' : ''}`);
 }
 
 // ---------- Incoming messages ----------
@@ -605,61 +614,58 @@ export function receiveMessage(transport: WhatsAppTransport, m: InboundMessage) 
     console.log(`${LOG} ${who(m.from)}: message is ${Math.round((Date.now() - m.sentAt) / 60_000)} min old, leaving it for Deepika`);
     return;
   }
-  const c = contactFor(m.from);
-  c.lastActive = Date.now();
-  c.transport = transport;
-  if (m.profileName) c.profileName = m.profileName.slice(0, 80);
-  if (m.referral?.source_type === 'ad') {
-    inBackground(saveAdLead(m.from, c, m.referral), (err) =>
+  inBackground(handleMessage(transport, m), (err) =>
+    console.error(`${LOG} could not handle a message from ${who(m.from)}:`, err instanceof Error ? err.message : err),
+  );
+}
+
+async function handleMessage(transport: WhatsAppTransport, m: InboundMessage) {
+  const waId = m.from;
+  const ad = m.referral?.source_type === 'ad' ? m.referral : undefined;
+  const adSource = ad ? sourceFromAdUrl(ad.source_url) : undefined;
+  const chat = await chats.touch(waId, { profileName: m.profileName?.trim().slice(0, 80) || undefined, adSource });
+
+  const msgText = m.text?.trim().slice(0, MAX_MESSAGE_CHARS) || null;
+  const media = m.media ? MEDIA[m.media] : undefined;
+  // What to do with it: keep it as context only, answer it (after the short wait), hand over, or acknowledge media
+  let action: 'context' | 'answer' | 'handover' | 'media_reply';
+  if (Date.now() < chat.pausedUntil) action = 'context'; // Deepika is handling this chat
+  else if (m.wantsDeepika) action = 'handover';
+  // Photos, voice notes and files are acknowledged at most every 30 minutes per chat; any caption is still answered
+  else if (media && (await chats.claimMediaAck(waId, MEDIA_ACK_EVERY_MS))) action = openai || msgText ? 'answer' : 'media_reply';
+  else action = msgText ? 'answer' : 'context';
+
+  const content = action === 'handover' ? TALK_TO_DEEPIKA : [media?.marker, msgText].filter(Boolean).join('\n');
+  if (!content) return; // stickers, reactions, locations
+  const id = await chats.addCustomerMessage(waId, content, { messageId: m.id, waiting: action === 'answer' });
+  if (id === null) return; // delivered before, to another server instance
+
+  if (ad) {
+    await saveAdLead(waId, chat, ad, adSource!).catch((err) =>
       console.error(`${LOG} could not save ad lead:`, err instanceof Error ? err.message : err),
     );
   }
-  const msgText = m.text?.trim() || null;
-  const media = m.media ? MEDIA[m.media] : undefined;
-
-  if (Date.now() < c.pausedUntil) {
-    // Deepika is handling this chat: only keep the context
-    if (media) remember(c, { role: 'user', content: media.marker });
-    if (msgText) remember(c, { role: 'user', content: msgText.slice(0, 1000) });
-    return;
-  }
-
-  if (m.wantsDeepika) {
-    transport.markReadAndTyping(m.id);
-    inBackground(handOver(m.from, c, transport), (err) => console.error(`${LOG} could not hand over ${who(m.from)}:`, err));
-    return;
-  }
-
-  if (media) {
-    // Photos, voice notes and files are acknowledged at most every 30 minutes per chat
-    const ackDue = Date.now() - c.lastMediaAck >= MEDIA_ACK_EVERY_MS;
-    if (ackDue) c.lastMediaAck = Date.now();
-    if (!ackDue || (!openai && msgText)) {
-      remember(c, { role: 'user', content: media.marker }); // context only; any caption is still answered
-    } else if (!openai) {
-      transport.markReadAndTyping(m.id);
-      remember(c, { role: 'user', content: media.marker });
-      inBackground(
-        transport.send(m.from, media.reply, false).then(() => remember(c, { role: 'assistant', content: media.reply })),
-        (err) => console.error(`${LOG} could not reply to ${who(m.from)}:`, err instanceof Error ? err.message : err),
-      );
-      return;
-    } else {
-      c.pending.push(media.marker); // the model answers it together with any text sent alongside
-    }
-  }
-  if (msgText) c.pending.push(msgText);
-  if (!c.pending.length) return; // stickers, reactions, locations, or a photo that was just acknowledged
+  if (action === 'context') return;
   transport.markReadAndTyping(m.id);
-  scheduleReply(m.from);
+  if (action === 'handover') return handOver(waId, chat, transport);
+  if (action === 'media_reply') {
+    // No language model: a fixed reply
+    await transport.send(waId, media!.reply, false);
+    await chats.addReply(waId, media!.reply, []);
+    return;
+  }
+  await replyAfterWait(waId, id, transport);
 }
 
 /** Deepika replied from the WhatsApp Business app (coexistence only): the bot steps back from that chat. */
 export function deepikaRepliedFromApp(to: string, messageId: string | undefined, body: string | undefined) {
   if (!to || (messageId && alreadySeen(messageId))) return;
-  const c = contactFor(to);
-  c.lastActive = Date.now();
-  pauseBot(c);
-  if (body) remember(c, { role: 'assistant', content: body.slice(0, 4000) });
-  console.log(`${LOG} Deepika replied to ${who(to)} from her phone; bot paused in that chat for ${TAKEOVER_MS / 3_600_000} h`);
+  inBackground(
+    (async () => {
+      await pauseBot(to);
+      if (body) await chats.addReply(to, body.slice(0, 4000), [], messageId);
+      console.log(`${LOG} Deepika replied to ${who(to)} from her phone; bot paused in that chat for ${TAKEOVER_MS / 3_600_000} h`);
+    })(),
+    (err) => console.error(`${LOG} could not note Deepika's reply to ${who(to)}:`, err instanceof Error ? err.message : err),
+  );
 }

@@ -57,6 +57,36 @@ CREATE TABLE IF NOT EXISTS availability (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 
+-- The WhatsApp assistant's conversations, so it remembers each chat however many server instances answer it (on
+-- Vercel every message can reach a fresh instance with empty memory). One row per message, oldest first by turn_at.
+CREATE TABLE IF NOT EXISTS whatsapp_messages (
+  id         bigserial   PRIMARY KEY,
+  wa_id      text        NOT NULL,      -- the customer's WhatsApp number, digits only
+  role       text        NOT NULL CHECK (role IN ('user', 'assistant')),  -- customer / assistant (or Deepika)
+  content    text        NOT NULL,
+  message_id text,                      -- the WhatsApp/Twilio message ID, so a redelivered message is answered once
+  -- Its place in the conversation. NULL: a customer message still waiting for a reply; it gets the time of the
+  -- reply that answers it, so messages that arrive while a reply is being written come after that reply.
+  turn_at    timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS whatsapp_messages_message_id_idx ON whatsapp_messages (message_id) WHERE message_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS whatsapp_messages_chat_idx ON whatsapp_messages (wa_id, turn_at);
+
+-- One row per WhatsApp customer: what the assistant needs to know about the chat besides its messages.
+CREATE TABLE IF NOT EXISTS whatsapp_chats (
+  wa_id           text        PRIMARY KEY,
+  profile_name    text,                 -- their WhatsApp profile name
+  ad_source       text,                 -- 'instagram_ad' / 'facebook_ad' when the chat started from an ad
+  paused_until    timestamptz,          -- coexistence: Deepika is handling the chat, the assistant stays quiet
+  last_media_ack  timestamptz,          -- photos and voice notes are acknowledged at most every 30 minutes
+  replying_until  timestamptz,          -- a server instance is writing a reply (expires on its own if it crashed)
+  replying_token  text,
+  last_message_at timestamptz NOT NULL DEFAULT now(),
+  created_at      timestamptz NOT NULL DEFAULT now()
+);
+
 -- Knowledge base for the RAG assistant (filled by: npm run db:ingest).
 CREATE TABLE IF NOT EXISTS knowledge_chunks (
   id         text        PRIMARY KEY,

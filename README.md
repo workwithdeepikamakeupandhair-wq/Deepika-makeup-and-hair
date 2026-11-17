@@ -99,9 +99,9 @@ Things that differ from a normal server:
 
 - **Slower first chat answer:** each new function instance downloads the search model (~90 MB) to `/tmp`. The first
   chat answer after a quiet spell can take a few seconds longer.
-- **Shorter WhatsApp memory:** the bot's chat memory lasts only while an instance stays warm, so after a quiet spell a
-  conversation starts fresh. Booking requests are always saved to the database. A normal server (Render) keeps the
-  memory.
+- **WhatsApp memory in the database:** each message can reach a different, freshly started instance, so the bot keeps
+  every conversation in the `whatsapp_messages` and `whatsapp_chats` tables rather than in memory (see
+  [WhatsApp bot](#whatsapp-bot)). `/api/health` shows `"whatsappMemory": "database"`.
 - **Smaller install:** `.npmrc` stops onnxruntime from downloading ~500 MB of GPU libraries on Linux; the model runs on
   the CPU.
 - **Rules for server code:** relative imports in `server/` end in `.js`, because Vercel runs these files as plain ES
@@ -178,7 +178,11 @@ detail within a day, the same request is updated.
 - **Garbled names:** the model now and then writes a name in the wrong alphabet ("प्रियa"). Such a reply is written
   again before it's sent. A reply in Hindi script to a customer who writes Hindi or Hinglish is fine.
 
-Chat history (last 20 messages) and pauses are kept in memory, so a restart only forgets recent context. With
+**Conversations are saved in the database** (`server/whatsappChats.ts`; tables `whatsapp_messages` and `whatsapp_chats`
+from `npm run db:setup`). Every reply is written from the stored chat (the last 30 messages), so the bot remembers it
+across restarts and across Vercel instances: it doesn't welcome the customer twice or ask again for details they gave.
+The database also makes sure only one reply is written per chat at a time, and that a message redelivered to another
+instance is answered once. Without `DATABASE_URL`, conversations are kept in memory and a restart forgets them. With
 `gpt-5.4-mini`, WhatsApp replies run with `reasoning_effort: none`, because OpenAI's Chat Completions API doesn't allow
 function tools together with reasoning on that model. `OPENAI_TOOLS_REASONING_EFFORT` overrides this for other models.
 
@@ -211,8 +215,8 @@ sandbox; 63016: outside WhatsApp's 24-hour window). Trial accounts have a low da
 
 **On Vercel:** add `TWILIO_ACCOUNT_SID` and `TWILIO_AUTH_TOKEN` to the API project. The simplest webhook is the API's own
 address (`https://<api-domain>/api/twilio/whatsapp`). To use the website domain instead, also set `TWILIO_WEBHOOK_URL` to
-exactly that URL, because Twilio signs the address it called and the API sees its own. The bot's chat memory is
-shorter there (see [Vercel](#vercel)).
+exactly that URL, because Twilio signs the address it called and the API sees its own. Run `npm run db:setup` against
+the API's database once, so the bot can save conversations there.
 
 ### Going live with a number bought from Twilio
 
