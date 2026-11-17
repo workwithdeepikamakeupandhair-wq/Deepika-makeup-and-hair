@@ -25,7 +25,7 @@
 import { SERVICE_NOT_SPECIFIED } from '../src/data/leads.js';
 import { BUSINESS_INFO as B, WHATSAPP_CONTACTS } from '../src/data/portfolioData.js';
 import { retrieve, searchOnlyAnswer, type ChatMessage } from './assistant.js';
-import { assistantStatusOf, checkAvailabilityForAssistant, isIsoDate, todayInAtlanta } from './availability.js';
+import { assistantStatusOf, checkAvailabilityTool, isIsoDate, todayInAtlanta } from './availability.js';
 import { inBackground } from './background.js';
 import { getDb, pool } from './db.js';
 import { BOOKABLE_SERVICES, businessFacts } from './knowledge.js';
@@ -349,30 +349,7 @@ async function saveHandoffLead(waId: string, chat: ChatInfo, messages: ChatMessa
 
 function toolsFor(waId: string, chat: ChatInfo, messages: ChatMessage[], turn: Turn): Record<string, ChatTool> {
   return {
-    check_availability: {
-      definition: {
-        type: 'function',
-        function: {
-          name: 'check_availability',
-          description: `Look up ${B.artist}'s availability calendar for one date or a range of dates (at most 62 days). Use it whenever the customer mentions an event date, asks whether ${B.artist} is free, or wants other dates.`,
-          strict: true,
-          parameters: {
-            type: 'object',
-            additionalProperties: false,
-            required: ['start_date', 'end_date'],
-            properties: {
-              start_date: { type: 'string', description: 'First date to check, as YYYY-MM-DD.' },
-              end_date: { type: 'string', description: 'Last date to check, as YYYY-MM-DD. The same as start_date to check a single day.' },
-            },
-          },
-        },
-      },
-      run: async (args) => {
-        const result = await checkAvailabilityForAssistant(text(args.start_date, 10), text(args.end_date, 10));
-        console.log(`${LOG} ${who(waId)}: checked the calendar for ${text(args.start_date, 10)}${args.end_date !== args.start_date ? ` to ${text(args.end_date, 10)}` : ''}`);
-        return result;
-      },
-    },
+    check_availability: checkAvailabilityTool(`${LOG} ${who(waId)}`),
     save_booking_request: {
       definition: {
         type: 'function',

@@ -85,6 +85,11 @@ export const CalendarPage: React.FC<{ onLoggedOut: () => void }> = ({ onLoggedOu
   const [saving, setSaving] = useState(false);
   const [announcement, setAnnouncement] = useState('');
   const anchor = useRef<string | null>(null);
+  /**
+   * Set once a change is saved. The next click then starts a new selection, even in "Select several days" mode, so the
+   * day just marked (which stays selected for its note) is never changed again along with the next one.
+   */
+  const startFresh = useRef(false);
   const latestRequest = useRef(0);
 
   const handleError = useCallback(
@@ -151,6 +156,12 @@ export const CalendarPage: React.FC<{ onLoggedOut: () => void }> = ({ onLoggedOu
   /** Click: just this day. Ctrl/⌘-click or "Select several days": add or remove it. Shift-click: the whole range. */
   const pick = (date: string, e: React.MouseEvent) => {
     if (date < today) return;
+    if (startFresh.current) {
+      startFresh.current = false;
+      anchor.current = date;
+      setSelected((prev) => (prev.length === 1 && prev[0] === date ? [] : [date]));
+      return;
+    }
     if (e.shiftKey && anchor.current) {
       const [a, b] = [anchor.current, date].sort();
       const range = grid.filter((d) => d >= a && d <= b && d >= today);
@@ -181,6 +192,7 @@ export const CalendarPage: React.FC<{ onLoggedOut: () => void }> = ({ onLoggedOu
     setSaving(true);
     try {
       await api.markDays(dates, status);
+      startFresh.current = true;
       setError('');
       const what = `${dates.length === 1 ? fmt(dates[0], { month: 'short', day: 'numeric' }) : `${dates.length} days`}`;
       setAnnouncement(status ? `${what} marked ${statusLabel(status)}.` : `${what} cleared.`);
@@ -213,6 +225,7 @@ export const CalendarPage: React.FC<{ onLoggedOut: () => void }> = ({ onLoggedOu
     try {
       await api.markDays([single], singleDay.status, note.trim() || null);
       setDays((prev) => ({ ...prev, [single]: { ...prev[single], note: note.trim() || null } }));
+      startFresh.current = true;
       setNoteState('saved');
       void load(true);
     } catch (err) {
@@ -232,7 +245,7 @@ export const CalendarPage: React.FC<{ onLoggedOut: () => void }> = ({ onLoggedOu
         <div>
           <h1 className="font-serif text-3xl sm:text-4xl">Calendar</h1>
           <p className="mt-1 max-w-2xl text-sm text-[#6A5F56]">
-            Mark the days you're free or fully booked. The WhatsApp assistant checks this calendar whenever a customer asks about a date. Days you don't mark count as open.
+            Mark the days you're free or fully booked. The WhatsApp assistant and the website chat check this calendar whenever a customer asks about a date. Days you don't mark count as open.
           </p>
         </div>
         <button
@@ -376,7 +389,7 @@ export const CalendarPage: React.FC<{ onLoggedOut: () => void }> = ({ onLoggedOu
               <div className="mt-4 flex gap-3 rounded-xl bg-[#F6EFE7] p-3.5 text-sm text-[#5A4D42]">
                 <MessageCircle className="w-4 h-4 mt-0.5 shrink-0 text-[#25D366]" aria-hidden />
                 <p>
-                  When a customer asks the WhatsApp assistant about a date, it checks here first. Fully booked days get the nearest open dates suggested instead.
+                  When a customer asks the WhatsApp assistant or the website chat about a date, it checks here and answers free or booked from your marks. Fully booked days get the nearest open dates suggested instead.
                 </p>
               </div>
             </>

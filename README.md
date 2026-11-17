@@ -183,8 +183,8 @@ from `npm run db:setup`). Every reply is written from the stored chat (the last 
 across restarts and across Vercel instances: it doesn't welcome the customer twice or ask again for details they gave.
 The database also makes sure only one reply is written per chat at a time, and that a message redelivered to another
 instance is answered once. Without `DATABASE_URL`, conversations are kept in memory and a restart forgets them. With
-`gpt-5.4-mini`, WhatsApp replies run with `reasoning_effort: none`, because OpenAI's Chat Completions API doesn't allow
-function tools together with reasoning on that model. `OPENAI_TOOLS_REASONING_EFFORT` overrides this for other models.
+`gpt-5.4-mini`, WhatsApp and website chat replies run with `reasoning_effort: none`, because OpenAI's Chat Completions API
+doesn't allow function tools (the calendar check) together with reasoning on that model. `OPENAI_TOOLS_REASONING_EFFORT` overrides this for other models.
 
 ### Testing with Twilio's WhatsApp sandbox
 
@@ -320,8 +320,9 @@ derived from `DATABASE_URL`, so they survive restarts.
 
 ### Availability calendar (/admin/calendar)
 
-The **Calendar** tab, next to **Leads**, is where Deepika or her team mark each day. The WhatsApp assistant reads it
-whenever a customer asks about a date.
+The **Calendar** tab, next to **Leads**, is where Deepika or her team mark each day. The WhatsApp assistant and the
+website chat read it every time a customer asks about a date (even one already discussed in the chat, since marks
+change), and say whether it's free or booked only from these marks.
 
 | Mark | What WhatsApp customers hear |
 |---|---|
@@ -330,7 +331,8 @@ whenever a customer asks about a date.
 | **Fully booked** | The date is booked, plus the nearest open dates, and the request can still go to Deepika in case a slot opens up |
 
 - **Mark days:** click a day, then choose a mark. *Select several days* (or Ctrl/⌘-click, or Shift-click for a range)
-  marks many at once. *Clear mark* makes a day open again. Past days can't be changed.
+  marks many at once. *Clear mark* makes a day open again. Past days can't be changed. After a mark is saved, the next
+  click starts a new selection, so the day just marked is never changed again along with the next one.
 - **Team note:** a marked day can carry a private note (e.g. "Priya's wedding, ready by 7 am"). Customers never see it.
 - **Leads on each day:** each day shows how many leads have their event then, and clicking it lists them with their
   stage, so you can see what's already requested before marking a day full.

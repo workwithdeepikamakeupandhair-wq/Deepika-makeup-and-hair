@@ -1,12 +1,14 @@
 /**
- * Deepika's availability calendar: the dashboard marks days (Free / Few slots left / Fully booked), and the WhatsApp
- * assistant reads them before telling a customer whether a date is open. Days nobody has marked count as open.
+ * Deepika's availability calendar: the dashboard marks days (Free / Few slots left / Fully booked), and the chat
+ * assistants (WhatsApp and the website) read them before telling a customer whether a date is open. Days nobody has
+ * marked count as open.
  *
  * Dates are plain calendar dates (YYYY-MM-DD), so no time zone can shift them; "today" is today in Atlanta.
  */
 import type { AvailabilityDay, AvailabilityStatus, CalendarLead } from '../src/data/availability.js';
 import { BUSINESS_INFO as B } from '../src/data/portfolioData.js';
 import { getDb, pool } from './db.js';
+import type { ChatTool } from './llm.js';
 
 export const TIME_ZONE = 'America/New_York';
 
@@ -119,6 +121,35 @@ export async function checkAvailabilityForAssistant(startDate: string, endDate: 
     few_slots_left: fewSlotsLeft,
     fully_booked: fullyBooked,
     ...(skippedPast ? { note: `Dates before today (${today}) were skipped.` } : {}),
+  };
+}
+
+/** The check_availability tool for the chat assistants. `log` starts the log line, e.g. "[whatsapp] …1234". */
+export function checkAvailabilityTool(log: string): ChatTool {
+  const date = (value: unknown) => (typeof value === 'string' ? value.trim().slice(0, 10) : '');
+  return {
+    definition: {
+      type: 'function',
+      function: {
+        name: 'check_availability',
+        description: `Look up ${B.artist}'s availability calendar for one date or a range of dates (at most ${MAX_CHECK_DAYS} days). Use it every time the customer mentions an event date, asks whether ${B.artist} is free, or wants other dates.`,
+        strict: true,
+        parameters: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['start_date', 'end_date'],
+          properties: {
+            start_date: { type: 'string', description: 'First date to check, as YYYY-MM-DD.' },
+            end_date: { type: 'string', description: 'Last date to check, as YYYY-MM-DD. The same as start_date to check a single day.' },
+          },
+        },
+      },
+    },
+    run: async (args) => {
+      const [start, end] = [date(args.start_date), date(args.end_date)];
+      console.log(`${log}: checked the calendar for ${start}${end !== start ? ` to ${end}` : ''}`);
+      return checkAvailabilityForAssistant(start, end);
+    },
   };
 }
 

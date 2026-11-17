@@ -199,7 +199,7 @@ export function businessFacts(): string {
     `About: ${B.bio}`,
     `Phone and WhatsApp: ${B.phonePrimaryCountry} ${B.phonePrimary} (main), ${B.phoneSecondaryCountry} ${B.phoneSecondary}. Email: ${B.email}. Instagram: ${B.instagramHandle} (${B.instagram}).`,
     `Price list: ${PRICE_LIST}`,
-    `Booking: customers send a booking request; ${B.artist} reviews requests within 24 hours and confirms availability personally.`,
+    `Booking: customers send a booking request; ${B.artist} reviews requests within 24 hours and confirms each booking personally.`,
     '',
     `Services (name, price, details). Services ending in "(Senior Artist)" are done by a senior artist; all others by ${B.artist} herself:`,
     ...ALL_SERVICES.map((s) => `- ${describeService(s)}`),

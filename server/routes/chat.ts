@@ -1,7 +1,9 @@
 import { Router, type Response } from 'express';
 import { retrieve, searchOnlyAnswer, type ChatMessage } from '../assistant.js';
+import { checkAvailabilityTool, todayInAtlanta } from '../availability.js';
+import { pool } from '../db.js';
 import { asyncHandler, cleanString, HttpError, rateLimit } from '../http.js';
-import { buildSystemPrompt, openai, OPENAI_MODEL, streamChatCompletion } from '../llm.js';
+import { buildSystemPrompt, openai, OPENAI_MODEL, streamChatWithTools, type ChatTool } from '../llm.js';
 
 export const chatRouter = Router();
 
@@ -61,37 +63,34 @@ chatRouter.post(
     const abort = new AbortController();
     res.on('close', () => abort.abort()); // visitor closed the chat — stop paying for tokens
 
-    let stream;
-    try {
-      stream = await streamChatCompletion(
-        [{ role: 'system', content: buildSystemPrompt(retrieved.context) }, ...messages],
-        abort.signal,
-      );
-    } catch (err) {
-      console.error(`[chat] OpenAI request failed (${OPENAI_MODEL}):`, err instanceof Error ? err.message : err);
-      startTextStream(res, 'search');
-      res.end(searchOnlyAnswer(retrieved));
-      return;
-    }
+    // Questions about a date are answered from Deepika's availability calendar
+    const calendar = Boolean(pool);
+    const system = buildSystemPrompt(retrieved.context, todayInAtlanta(), calendar);
+    const tools: Record<string, ChatTool> = calendar ? { check_availability: checkAvailabilityTool('[chat] website visitor') } : {};
 
-    startTextStream(res, 'ai');
+    // The headers go out with the first piece of text, so a failure before any text can still answer in search mode
     let wroteAnything = false;
     try {
-      for await (const chunk of stream) {
-        const text = chunk.choices[0]?.delta?.content;
-        if (text) {
-          res.write(text);
-          wroteAnything = true;
-        }
-      }
-      if (!wroteAnything) res.write(searchOnlyAnswer(retrieved));
+      await streamChatWithTools([{ role: 'system', content: system }, ...messages], tools, abort.signal, (text) => {
+        if (!res.headersSent) startTextStream(res, 'ai');
+        res.write(text);
+        wroteAnything = true;
+      });
     } catch (err) {
-      if (!abort.signal.aborted) {
-        console.error('[chat] OpenAI stream error:', err instanceof Error ? err.message : err);
-        res.write(wroteAnything ? '\n\n(Sorry, my reply was cut off.) ' : searchOnlyAnswer(retrieved));
+      if (abort.signal.aborted) {
+        res.end();
+        return;
       }
-    } finally {
-      res.end();
+      console.error(`[chat] OpenAI request failed (${OPENAI_MODEL}):`, err instanceof Error ? err.message : err);
+      if (wroteAnything) {
+        res.end('\n\n(Sorry, my reply was cut off.) ');
+        return;
+      }
     }
+    if (!wroteAnything) {
+      if (!res.headersSent) startTextStream(res, 'search');
+      res.write(searchOnlyAnswer(retrieved));
+    }
+    res.end();
   }),
 );
