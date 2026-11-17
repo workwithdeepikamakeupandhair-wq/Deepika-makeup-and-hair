@@ -324,7 +324,13 @@ export const FUNCTION_PRICES: OccasionPrice[] = [
   {
     title: "HD Makeup",
     price: 500,
-    includes: ["One hairstyle", "One saree draping"],
+    includes: [
+      "Matte & polished finish",
+      "Fuller coverage for acne, pigmentation & texture",
+      "Long-lasting flawless finish",
+      "One hairstyle",
+      "One saree draping",
+    ],
     bookingName: "HD Makeup (Engagement / House Warming / Half Saree Function)",
   },
 ];

@@ -79,11 +79,9 @@ const SENIOR_PRICE_LIST =
   `With a senior artist: ${SENIOR_ARTIST_SERVICES.map(priced).join(', ')}. ` +
   'Each senior artist bridal package includes one hairstyling and one saree draping.';
 
-/** "HD Makeup $500 (includes one hairstyle and one saree draping)" */
+/** "HD Makeup $500 (includes: Matte & polished finish; …; One saree draping)" */
 const occasionPrices = (prices: OccasionPrice[]) =>
-  prices
-    .map((q) => `${q.title} ${formatPrice(q.price)}${q.includes?.length ? ` (includes ${q.includes.join(' and ').toLowerCase()})` : ''}`)
-    .join(', ');
+  prices.map((q) => `${q.title} ${formatPrice(q.price)}${q.includes?.length ? ` (includes: ${list(q.includes)})` : ''}`).join(', ');
 
 /** What Deepika quotes for occasions other than weddings (not on the prices page). */
 const FUNCTIONS_PRICE_LIST = `${FUNCTION_OCCASIONS.join(', ')} (with Deepika herself): ${occasionPrices(FUNCTION_PRICES)}.`;

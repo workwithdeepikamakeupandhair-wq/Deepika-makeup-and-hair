@@ -61,7 +61,7 @@ Package prices are for Atlanta. ${CLOSING}`;
 
 const functionQuote = (occasion: string) => `*${occasion} Quotation* ✨
 
-${FUNCTION_PRICES.map((q) => [priceLine(q), ...(q.includes?.length ? [ticks(q.includes)] : [])].join('\n')).join('\n\n')}
+${FUNCTION_PRICES.map((q) => [priceLine(q), ...(q.includes?.length ? [`\n*What's included:*\n${ticks(q.includes)}`] : [])].join('\n')).join('\n\n')}
 
 ${CLOSING}`;
 
