@@ -44,7 +44,7 @@ const service = (id: string) => [...SERVICES, ...SENIOR_ARTIST_SERVICES].find((s
 const priceLine = (s: ServiceItem | OccasionPrice) => `• ${s.title}: ${formatPrice(s.price)}${'badge' in s && s.badge ? ` (${s.badge})` : ''}`;
 const ticks = (items: string[]) => items.map((i) => `✔ ${i}`).join('\n');
 /** From the price lists: travel charges, and the advance that confirms the date. */
-const POLICY = `${TRAVEL_POLICY[0]}.\nYour date is confirmed after a ${ADVANCE_PERCENT}% advance payment (non-refundable).`;
+const POLICY = `${TRAVEL_POLICY[0]}.\nA ${ADVANCE_PERCENT}% advance payment (non-refundable) blocks your slot and confirms your date.`;
 /** Under Deepika's own prices: they're for the Atlanta area, where she does the makeup herself. */
 const DEEPIKA_CLOSING = `These prices are with ${ARTIST} herself, for events in the Atlanta area. Outside Atlanta, one of ${ARTIST}'s senior artists takes care of you, and the price can differ.\n${POLICY}`;
 const SENIOR_CLOSING = `These are our senior artists' prices. They're personally trained by ${ARTIST} and follow her techniques and standards.\n${POLICY}`;
@@ -169,7 +169,7 @@ Total: *${money(b.total)}*
 Advance (${ADVANCE_PERCENT}%): *${money(b.advance)}*
 Remaining balance: ${money(b.balance)}
 
-To confirm your booking, we require a ${ADVANCE_PERCENT}% advance payment of the total package amount, which is *${money(b.advance)}*.
+To confirm your booking and block your slot, we require a ${ADVANCE_PERCENT}% advance payment of the total package amount, which is *${money(b.advance)}*.
 
 Please note that the advance payment is non-refundable.
 

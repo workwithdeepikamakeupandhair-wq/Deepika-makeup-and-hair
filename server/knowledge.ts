@@ -152,7 +152,7 @@ export const FAQ: { q: string; a: string }[] = [
   },
   {
     q: 'Is there an advance or deposit? How much is the advance? What is your cancellation, refund or postponement policy?',
-    a: `A ${ADVANCE_PERCENT}% advance of the total package amount confirms the booking, and it is non-refundable. ${list(BOOKING_POLICY)}.`,
+    a: `A ${ADVANCE_PERCENT}% advance of the total package amount blocks the slot and confirms the booking, and it is non-refundable. ${list(BOOKING_POLICY)}.`,
   },
   {
     q: 'What is your phone number, WhatsApp or Instagram? How do I contact you?',
