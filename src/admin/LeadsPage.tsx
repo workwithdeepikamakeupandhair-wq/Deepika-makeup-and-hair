@@ -1,21 +1,32 @@
 /**
  * The leads dashboard: every enquiry from Meta ads, the website form and the WhatsApp assistant, with stage and
- * owner editable in place. Refreshes itself every minute so new ad leads appear without reloading.
+ * owner editable in place. Refreshes itself every minute so new ad leads appear without reloading. "Payments to
+ * verify" lists the WhatsApp bookings whose payment screenshot waits for the team's approval.
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Inbox, Phone, RefreshCw, Search } from 'lucide-react';
+import { BadgeCheck, Inbox, Phone, RefreshCw, Search } from 'lucide-react';
+import { timeLabel } from '../data/bookingFlow';
 import { LEAD_SOURCES, LEAD_STAGES, type AdminUser, type Lead } from '../data/leads';
 import { api, NotLoggedIn, type LeadsPageData } from './api';
-import { AssigneeSelect, SourcePill, StageSelect } from './controls';
+import { AssigneeSelect, BookingStatusPill, SourcePill, StageSelect } from './controls';
 import { channelLabel, eventDateLabel, fullDateTime, timeAgo } from './format';
 import { LeadDrawer } from './LeadDrawer';
 
 const AUTO_REFRESH_MS = 60_000;
+const TO_VERIFY = 'payment_review';
 
 type Changes = { stage?: string; assignedTo?: string | null; adminNotes?: string | null };
 
-export const LeadsPage: React.FC<{ onLoggedOut: () => void }> = ({ onLoggedOut }) => {
+export const LeadsPage: React.FC<{
+  onLoggedOut: () => void;
+  /** The latest count of payments to verify, for the header's badge. */
+  onPaymentsToVerify?: (n: number) => void;
+  /** A booking was approved or sent back: the header's badge should refresh. */
+  onBookingChanged?: () => void;
+}> = ({ onLoggedOut, onPaymentsToVerify, onBookingChanged }) => {
   const [stage, setStage] = useState('');
+  /** '' or 'payment_review' (the "Payments to verify" filter) */
+  const [booking, setBooking] = useState('');
   const [source, setSource] = useState('');
   const [search, setSearch] = useState('');
   const [query, setQuery] = useState('');
@@ -48,9 +59,10 @@ export const LeadsPage: React.FC<{ onLoggedOut: () => void }> = ({ onLoggedOut }
       const id = ++latestRequest.current;
       if (!silent) setLoading(true);
       try {
-        const page = await api.leads({ stage, source, q: query });
+        const page = await api.leads({ stage, source, booking, q: query });
         if (id !== latestRequest.current) return; // a newer filter change already replaced this request
         setData(page);
+        onPaymentsToVerify?.(page.paymentsToVerify);
         setError('');
         setUpdatedAt(new Date());
         setNow(Date.now());
@@ -60,7 +72,7 @@ export const LeadsPage: React.FC<{ onLoggedOut: () => void }> = ({ onLoggedOut }
         if (id === latestRequest.current) setLoading(false);
       }
     },
-    [stage, source, query, handleError],
+    [stage, source, booking, query, handleError, onPaymentsToVerify],
   );
 
   useEffect(() => {
@@ -85,7 +97,7 @@ export const LeadsPage: React.FC<{ onLoggedOut: () => void }> = ({ onLoggedOut }
     if (!data) return;
     setLoadingMore(true);
     try {
-      const page = await api.leads({ stage, source, q: query, offset: data.leads.length });
+      const page = await api.leads({ stage, source, booking, q: query, offset: data.leads.length });
       setData((d) => d && { ...d, hasMore: page.hasMore, leads: [...d.leads, ...page.leads.filter((l) => !d.leads.some((x) => x.id === l.id))] });
     } catch (err) {
       handleError(err);
@@ -129,10 +141,21 @@ export const LeadsPage: React.FC<{ onLoggedOut: () => void }> = ({ onLoggedOut }
     }
   };
 
+  /** A booking was approved or sent back from the side panel: show the new lead, and refresh the badge. */
+  const bookingChanged = (next: Lead, previous: Lead) => {
+    replaceLead(next, previous.stage);
+    if (previous.bookingStatus === TO_VERIFY && next.bookingStatus !== TO_VERIFY) {
+      setData((d) => d && { ...d, paymentsToVerify: Math.max(0, d.paymentsToVerify - 1) });
+    }
+    onBookingChanged?.();
+  };
+
   const counts = data?.counts ?? {};
   const total = Object.values(counts).reduce((a, b) => a + b, 0);
   const openLead = data?.leads.find((l) => l.id === openId) ?? null;
-  const filtered = Boolean(stage || source || query);
+  const filtered = Boolean(stage || source || query || booking);
+  const toVerify = data?.paymentsToVerify ?? 0;
+  const verifying = booking === TO_VERIFY;
 
   return (
     <>
@@ -151,17 +174,42 @@ export const LeadsPage: React.FC<{ onLoggedOut: () => void }> = ({ onLoggedOut }
           </button>
         </div>
 
-        {/* Stage tabs with counts */}
+        {/* Payments to verify, then the stage tabs with counts */}
         <div role="tablist" aria-label="Filter by stage" className="mt-6 flex gap-2 overflow-x-auto pb-1 -mx-4 px-4 sm:mx-0 sm:px-0">
+          <button
+            role="tab"
+            aria-selected={verifying}
+            onClick={() => {
+              setBooking(verifying ? '' : TO_VERIFY);
+              setStage('');
+            }}
+            title="WhatsApp bookings whose payment screenshot waits for your approval"
+            className={`shrink-0 inline-flex items-center gap-2 rounded-full border px-4 py-2 text-xs font-semibold transition-colors ${
+              verifying
+                ? 'border-[#B4236E] bg-[#B4236E] text-white'
+                : toVerify > 0
+                  ? 'border-[#F5C6DE] bg-[#FCE8F3] text-[#B4236E] hover:bg-[#F9DCEC]'
+                  : 'border-[#E7DFD6] bg-white text-[#6A5F56] hover:bg-[#F4EFEA]'
+            }`}
+          >
+            <BadgeCheck className="w-3.5 h-3.5" aria-hidden /> Payments to verify
+            <span className={`rounded-full px-1.5 py-0.5 text-[10px] tabular-nums ${verifying ? 'bg-white/20' : toVerify > 0 ? 'bg-white text-[#B4236E]' : 'bg-[#F4EFEA]'}`}>
+              {toVerify}
+            </span>
+          </button>
+          <span aria-hidden className="shrink-0 my-1.5 w-px bg-[#E7DFD6]" />
           {[{ id: '', label: 'All' }, ...LEAD_STAGES].map((s) => {
-            const active = stage === s.id;
+            const active = !verifying && stage === s.id;
             const n = s.id ? (counts[s.id] ?? 0) : total;
             return (
               <button
                 key={s.id || 'all'}
                 role="tab"
                 aria-selected={active}
-                onClick={() => setStage(s.id)}
+                onClick={() => {
+                  setStage(s.id);
+                  setBooking('');
+                }}
                 className={`shrink-0 inline-flex items-center gap-2 rounded-full border px-4 py-2 text-xs font-medium transition-colors ${
                   active ? 'border-[#1D1714] bg-[#1D1714] text-white' : 'border-[#E7DFD6] bg-white text-[#1D1714] hover:bg-[#F4EFEA]'
                 }`}
@@ -253,10 +301,13 @@ export const LeadsPage: React.FC<{ onLoggedOut: () => void }> = ({ onLoggedOut }
                       </p>
                     </td>
                     <td className="px-4 py-4">
-                      <p className="text-sm truncate max-w-[220px]">{lead.service}</p>
-                      <p className="mt-1 text-xs text-[#6A5F56] truncate max-w-[220px]">
-                        {[eventDateLabel(lead.eventDate), lead.eventLocation].filter(Boolean).join(' · ') || '—'}
+                      <p className="text-sm truncate max-w-[220px]" title={lead.service}>
+                        {lead.service}
                       </p>
+                      <p className="mt-1 text-xs text-[#6A5F56] truncate max-w-[220px]">
+                        {[[eventDateLabel(lead.eventDate), timeLabel(lead.eventTime)].filter(Boolean).join(', '), lead.eventLocation].filter(Boolean).join(' · ') || '—'}
+                      </p>
+                      {lead.bookingStatus && <BookingStatusPill status={lead.bookingStatus} className="mt-1.5" />}
                     </td>
                     <td className="px-4 py-4">
                       <StageSelect value={lead.stage} label={`Stage for ${lead.fullName}`} onChange={(s) => void updateLead(lead, { stage: s }).catch(() => {})} />
@@ -283,11 +334,13 @@ export const LeadsPage: React.FC<{ onLoggedOut: () => void }> = ({ onLoggedOut }
               <div className="w-12 h-12 rounded-full bg-[#F4EFEA] text-[#9E7D53] flex items-center justify-center">
                 <Inbox className="w-6 h-6" />
               </div>
-              <p className="mt-4 font-serif text-xl">{filtered ? 'No leads match these filters' : 'No leads yet'}</p>
+              <p className="mt-4 font-serif text-xl">{verifying && !source && !query ? 'No payments to verify' : filtered ? 'No leads match these filters' : 'No leads yet'}</p>
               <p className="mt-1 max-w-md text-sm text-[#6A5F56]">
-                {filtered
-                  ? 'Try another stage or source, or clear the search.'
-                  : 'New enquiries from your Instagram and Facebook ads, the website booking form and the WhatsApp assistant will appear here automatically.'}
+                {verifying && !source && !query
+                  ? 'When a customer sends their advance payment screenshot on WhatsApp, their booking appears here for you to check and approve.'
+                  : filtered
+                    ? 'Try another stage or source, or clear the search.'
+                    : 'New enquiries from your Instagram and Facebook ads, the website booking form and the WhatsApp assistant will appear here automatically.'}
               </p>
             </div>
           )}
@@ -314,6 +367,8 @@ export const LeadsPage: React.FC<{ onLoggedOut: () => void }> = ({ onLoggedOut }
           users={users}
           onClose={() => setOpenId(null)}
           onUpdate={(changes) => updateLead(openLead, changes)}
+          onBookingChanged={(next) => bookingChanged(next, openLead)}
+          onLoggedOut={onLoggedOut}
         />
       )}
     </>

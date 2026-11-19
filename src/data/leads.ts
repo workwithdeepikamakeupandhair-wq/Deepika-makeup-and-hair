@@ -60,6 +60,10 @@ export interface Lead {
   adminNotes: string | null;
   createdAt: string;
   updatedAt: string;
+  /** WhatsApp booking stage: awaiting_payment, payment_review, confirmed (see bookingFlow.ts); null otherwise */
+  bookingStatus: string | null;
+  /** "08:00": when the makeup starts, for WhatsApp bookings */
+  eventTime: string | null;
 }
 
 export interface AdminUser {

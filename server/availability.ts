@@ -3,12 +3,19 @@
  * assistants (WhatsApp and the website) read them before telling a customer whether a date is open. Days nobody has
  * marked count as open.
  *
- * Dates are plain calendar dates (YYYY-MM-DD), so no time zone can shift them; "today" is today in Atlanta.
+ * Times of day: a requested time is free unless the day is fully booked, the team marked that time as taken
+ * (`calendar_blocks`), or one of Deepika's WhatsApp bookings already holds it (each booking takes the length set in
+ * the dashboard's Settings). Senior artists' bookings don't take Deepika's time.
+ *
+ * Dates are plain calendar dates (YYYY-MM-DD), so no time zone can shift them; "today" is today in Atlanta. Times are
+ * Atlanta clock times ("08:00").
  */
 import type { AvailabilityDay, AvailabilityStatus, CalendarLead } from '../src/data/availability.js';
+import { timeLabel, type Artist, type BookingStatus, type CalendarAppointment, type TimeBlock } from '../src/data/bookingFlow.js';
 import { BUSINESS_INFO as B } from '../src/data/portfolioData.js';
 import { getDb, pool } from './db.js';
 import type { ChatTool } from './llm.js';
+import { getBookingSettings } from './settings.js';
 
 export const TIME_ZONE = 'America/New_York';
 
@@ -38,6 +45,8 @@ export function addDays(iso: string, days: number): string {
 export const daysInRange = (from: string, to: string) => Math.round((utc(to).getTime() - utc(from).getTime()) / 86_400_000) + 1;
 
 const weekday = (iso: string) => new Intl.DateTimeFormat('en-US', { timeZone: 'UTC', weekday: 'long' }).format(utc(iso));
+/** "2026-12-15" → "Tuesday" */
+export const weekdayOf = weekday;
 
 /** How the assistant sees a day. Unmarked days are open as far as the calendar shows. */
 type AssistantStatus = 'free' | 'few_slots_left' | 'fully_booked' | 'not_marked';
@@ -124,41 +133,201 @@ export async function checkAvailabilityForAssistant(startDate: string, endDate: 
   };
 }
 
-/** The check_availability tool for the chat assistants. `log` starts the log line, e.g. "[whatsapp] …1234". */
-export function checkAvailabilityTool(log: string): ChatTool {
-  const date = (value: unknown) => (typeof value === 'string' ? value.trim().slice(0, 10) : '');
+// ---------- Times of day ----------
+
+/** "8:00", "08:00" or "08:00:00" → minutes after midnight, or null. */
+export function toMinutes(time: string): number | null {
+  const m = time.trim().match(/^(\d{1,2}):(\d{2})(?::\d{2})?$/);
+  if (!m) return null;
+  const [h, min] = [Number(m[1]), Number(m[2])];
+  return h < 24 && min < 60 ? h * 60 + min : null;
+}
+
+/** Minutes after midnight → "08:00". */
+export const fromMinutes = (minutes: number) => `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
+
+/**
+ * A booking whose customer was asked for the advance keeps its time this long (unless they send the screenshot,
+ * which keeps it until the team decides), so two customers can't pay for the same time.
+ */
+export const PAYMENT_HOLD_HOURS = 24;
+
+/** Deepika's WhatsApp bookings that take their time on the calendar (a senior artist's don't). */
+const HOLDS_TIME = `b.event_time IS NOT NULL AND b.status <> 'lost' AND (b.artist IS NULL OR b.artist = 'deepika')
+  AND (b.booking_status IN ('confirmed', 'payment_review')
+       OR (b.booking_status = 'awaiting_payment' AND b.payment_requested_at > now() - interval '${PAYMENT_HOLD_HOURS} hours'))`;
+
+interface Busy {
+  start: number;
+  end: number;
+  /** For the dashboard, e.g. "8:00 AM–10:00 AM · Priya Sharma (lead #12)" */
+  label: string;
+}
+
+/** The times already taken on a day: the team's blocks and Deepika's bookings (each `lengthMinutes` long). */
+async function busyTimes(date: string, lengthMinutes: number, except: { phone?: string; bookingId?: string } = {}): Promise<Busy[]> {
+  const db = getDb();
+  const [blocks, bookings] = await Promise.all([
+    db.query<{ start: string; end: string; note: string | null }>(
+      `SELECT to_char(start_time, 'HH24:MI') AS start, to_char(end_time, 'HH24:MI') AS "end", note FROM calendar_blocks WHERE day = $1`,
+      [date],
+    ),
+    db.query<{ id: string; full_name: string; start: string }>(
+      `SELECT b.id::text, b.full_name, to_char(b.event_time, 'HH24:MI') AS start FROM bookings b
+        WHERE b.event_date = $1 AND ${HOLDS_TIME}
+          AND ($2::text IS NULL OR b.phone <> $2) AND ($3::bigint IS NULL OR b.id <> $3)`,
+      [date, except.phone ?? null, except.bookingId ?? null],
+    ),
+  ]);
+  const span = (start: number, end: number) => `${timeLabel(fromMinutes(start))}–${timeLabel(fromMinutes(end))}`;
+  return [
+    ...blocks.rows.map((r) => {
+      const [start, end] = [toMinutes(r.start)!, toMinutes(r.end)!];
+      return { start, end, label: `${span(start, end)} · blocked${r.note ? `: ${r.note}` : ''}` };
+    }),
+    ...bookings.rows.map((r) => {
+      const start = toMinutes(r.start)!;
+      return { start, end: start + lengthMinutes, label: `${span(start, start + lengthMinutes)} · ${r.full_name} (lead #${r.id})` };
+    }),
+  ];
+}
+
+/** Other start times suggested when the requested one is taken: within this many hours of it, in this window. */
+const SUGGEST_WITHIN_HOURS = 4;
+const SUGGEST_FROM = 4 * 60;
+const SUGGEST_UNTIL = 21 * 60;
+
+/**
+ * Whether `time` on `date` is free for a booking: the day isn't fully booked and nothing else takes any part of the
+ * booking's length from then. `except` leaves out the customer's own booking (so it never clashes with itself).
+ */
+export async function checkTime(date: string, time: string, except: { phone?: string; bookingId?: string } = {}) {
+  const settings = await getBookingSettings();
+  const length = Math.round(settings.appointmentHours * 60);
+  const start = toMinutes(time)!;
+  const [marks, busy] = await Promise.all([marksBetween(date, date), busyTimes(date, length, except)]);
+  const dayStatus = marks.get(date);
+  const clashes = (t: number) => busy.filter((b) => t < b.end && b.start < t + length);
+  const free = (t: number) => dayStatus !== 'booked' && !clashes(t).length;
+  return { dayStatus: dayStatus ? FOR_ASSISTANT[dayStatus] : ('not_marked' as AssistantStatus), free, conflicts: clashes(start).map((b) => b.label), open: free(start), start };
+}
+
+/** check_availability with a time: is that time free, and if not, which nearby times are (all checked here). */
+export async function checkTimeForAssistant(date: string, time: string, except: { phone?: string } = {}) {
+  if (!pool) return { ok: false, error: `The calendar can't be read right now. Tell the customer ${B.artist} will confirm availability personally.` };
+  if (!isIsoDate(date)) return { ok: false, error: 'The date must be a real date written as YYYY-MM-DD.' };
+  const minutes = toMinutes(time);
+  if (minutes === null) return { ok: false, error: 'The time must be written as HH:MM (24-hour clock), e.g. "08:00" or "14:30".' };
+  const today = todayInAtlanta().iso;
+  if (date < today) return { ok: false, error: `That date is in the past (today is ${today}). Ask the customer for a future date.` };
+
+  const check = await checkTime(date, fromMinutes(minutes), except);
+  const base = { ok: true, date, weekday: weekday(date), requested_time: timeLabel(fromMinutes(minutes)), day_status: check.dayStatus };
+  if (check.dayStatus === 'fully_booked') {
+    const day = await checkAvailabilityForAssistant(date, date);
+    return { ...base, time_status: 'fully_booked', nearest_open_dates: 'nearest_open_dates' in day ? day.nearest_open_dates : [] };
+  }
+  if (check.open) return { ...base, time_status: 'open' };
+
+  const inWindow = (t: number) => t >= SUGGEST_FROM && t <= SUGGEST_UNTIL;
+  const option = (t: number) => (inWindow(t) ? { time: timeLabel(fromMinutes(t)), status: check.free(t) ? 'open' : 'booked' } : null);
+  const others: string[] = [];
+  for (let hours = 2; hours <= SUGGEST_WITHIN_HOURS && others.length < 3; hours++) {
+    for (const t of [minutes - hours * 60, minutes + hours * 60]) if (inWindow(t) && check.free(t) && others.length < 3) others.push(timeLabel(fromMinutes(t)));
+  }
+  return {
+    ...base,
+    time_status: 'booked',
+    one_hour_earlier: option(minutes - 60),
+    one_hour_later: option(minutes + 60),
+    other_open_times: others,
+    note: 'Offer only times listed here as open. If none is open, offer to check another date.',
+  };
+}
+
+/** Lower case, letters and digits only: "March 12th, 2027!" → "march 12th 2027". */
+export const plain = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+
+/** Words that say when: a number, a month or weekday, "today", "next week"… (also Hindi aaj/kal/parso, Telugu repu/ivala/eeroju). */
+const SAYS_WHEN =
+  /\d|\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\b|\b(mon|tues?|wed(nes)?|thu(rs)?|fri|sat(ur)?|sun)(day)?s?\b|\b(today|tonight|tomorrow|tmrw|weekend|week|month|year|next|this|coming|aaj|kal|parso|repu|ivala|eeroju)\b/;
+
+/**
+ * The check_availability tool for the chat assistants. `log` starts the log line, e.g. "[whatsapp] …1234".
+ * `customerPhone` (WhatsApp) keeps the customer's own booking from counting against the time they asked for.
+ * `customerSaid` is everything the customer wrote in the chat: the model must quote the words they used for the date,
+ * so it can't check a date nobody gave (left alone, it sometimes "helpfully" checks today).
+ */
+export function checkAvailabilityTool(log: string, customerPhone?: string, customerSaid?: string): ChatTool {
+  const text = (value: unknown, max: number) => (typeof value === 'string' ? value.trim().slice(0, max) : '');
+  const said = customerSaid === undefined ? null : plain(customerSaid);
   return {
     definition: {
       type: 'function',
       function: {
         name: 'check_availability',
-        description: `Look up ${B.artist}'s availability calendar for one date or a range of dates (at most ${MAX_CHECK_DAYS} days). Use it every time the customer mentions an event date, asks whether ${B.artist} is free, or wants other dates.`,
+        description: `Look up ${B.artist}'s availability calendar for one date (optionally at a time of day) or a range of dates (at most ${MAX_CHECK_DAYS} days). Use it every time the customer mentions an event date or a time, asks whether ${B.artist} is free, or wants other dates or times.`,
         strict: true,
         parameters: {
           type: 'object',
           additionalProperties: false,
-          required: ['start_date', 'end_date'],
+          required: ['customer_words', 'start_date', 'end_date', 'time'],
           properties: {
+            customer_words: {
+              type: 'string',
+              description: 'The words the customer used for this date, copied exactly from one of their messages, e.g. "March 12" or "next Saturday". Only check dates the customer gave.',
+            },
             start_date: { type: 'string', description: 'First date to check, as YYYY-MM-DD.' },
             end_date: { type: 'string', description: 'Last date to check, as YYYY-MM-DD. The same as start_date to check a single day.' },
+            time: {
+              type: 'string',
+              description:
+                'For a single day: when the customer wants their makeup to start, as HH:MM on the 24-hour clock (8 AM = "08:00", 2:30 PM = "14:30"). Empty string if they haven\'t said a time, or for a range.',
+            },
           },
         },
       },
     },
     run: async (args) => {
-      const [start, end] = [date(args.start_date), date(args.end_date)];
-      console.log(`${log}: checked the calendar for ${start}${end !== start ? ` to ${end}` : ''}`);
-      return checkAvailabilityForAssistant(start, end);
+      const [start, end, time] = [text(args.start_date, 10), text(args.end_date, 10), text(args.time, 8)];
+      const words = plain(text(args.customer_words, 200));
+      if (said !== null && (!words || !SAYS_WHEN.test(words) || !said.includes(words))) {
+        console.log(`${log}: calendar check refused (the customer didn't give that date)`);
+        return {
+          ok: false,
+          error: `customer_words must be copied exactly from the customer's own messages. If they haven't told you a date, don't check one (not even today's): ask them for their event date and time.`,
+        };
+      }
+      console.log(`${log}: checked the calendar for ${start}${end !== start ? ` to ${end}` : ''}${time ? ` at ${time}` : ''}`);
+      if (time && (!end || end === start)) return checkTimeForAssistant(start, time, { phone: customerPhone });
+      return checkAvailabilityForAssistant(start, end || start);
     },
   };
 }
 
+/** The team marks a time as taken on one day. */
+export async function addTimeBlock(date: string, start: string, end: string, note: string | null, userId: string): Promise<string> {
+  const { rows } = await getDb().query<{ id: string }>(
+    `INSERT INTO calendar_blocks (day, start_time, end_time, note, created_by) VALUES ($1, $2, $3, $4, $5) RETURNING id::text`,
+    [date, start, end, note, userId],
+  );
+  return rows[0].id;
+}
+
+export async function removeTimeBlock(id: string): Promise<boolean> {
+  const { rowCount } = await getDb().query('DELETE FROM calendar_blocks WHERE id = $1', [id]);
+  return Boolean(rowCount);
+}
+
 // ---------- Dashboard ----------
 
-/** The marked days and the leads with an event date between `from` and `to`. */
-export async function calendarBetween(from: string, to: string): Promise<{ days: AvailabilityDay[]; leads: CalendarLead[] }> {
+/** The marked days, the leads with an event date, the blocked times and the timed bookings between `from` and `to`. */
+export async function calendarBetween(
+  from: string,
+  to: string,
+): Promise<{ days: AvailabilityDay[]; leads: CalendarLead[]; blocks: TimeBlock[]; appointments: CalendarAppointment[]; appointmentHours: number }> {
   const db = getDb();
-  const [days, leads] = await Promise.all([
+  const [days, leads, blocks, appointments, settings] = await Promise.all([
     db.query<{ date: string; status: AvailabilityStatus; note: string | null; updated_at: Date; updated_by_name: string | null }>(
       `SELECT to_char(a.day, 'YYYY-MM-DD') AS date, a.status, a.note, a.updated_at, u.name AS updated_by_name
          FROM availability a LEFT JOIN admin_users u ON u.id = a.updated_by
@@ -174,8 +343,35 @@ export async function calendarBetween(from: string, to: string): Promise<{ days:
         LIMIT 500`,
       [from, to],
     ),
+    db.query<TimeBlock>(
+      `SELECT id::text, to_char(day, 'YYYY-MM-DD') AS date, to_char(start_time, 'HH24:MI') AS start, to_char(end_time, 'HH24:MI') AS "end", note
+         FROM calendar_blocks WHERE day BETWEEN $1 AND $2 ORDER BY day, start_time`,
+      [from, to],
+    ),
+    db.query<{ id: string; full_name: string; service: string; date: string; start: string; booking_status: BookingStatus; artist: Artist | null }>(
+      `SELECT id::text, full_name, service, to_char(event_date, 'YYYY-MM-DD') AS date, to_char(event_time, 'HH24:MI') AS start, booking_status, artist
+         FROM bookings
+        WHERE event_date BETWEEN $1 AND $2 AND event_time IS NOT NULL AND booking_status IS NOT NULL AND status <> 'lost'
+        ORDER BY event_date, event_time
+        LIMIT 500`,
+      [from, to],
+    ),
+    getBookingSettings(),
   ]);
+  const length = Math.round(settings.appointmentHours * 60);
   return {
+    blocks: blocks.rows,
+    appointments: appointments.rows.map((r) => ({
+      leadId: r.id,
+      fullName: r.full_name,
+      service: r.service,
+      date: r.date,
+      start: r.start,
+      end: fromMinutes(Math.min(toMinutes(r.start)! + length, 24 * 60 - 1)),
+      status: r.booking_status,
+      artist: r.artist,
+    })),
+    appointmentHours: settings.appointmentHours,
     days: days.rows.map((r) => ({
       date: r.date,
       status: r.status,

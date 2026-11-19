@@ -1,13 +1,15 @@
 /**
- * Deepika's virtual assistant on WhatsApp: the part shared by every way of connecting a number.
+ * Pooja, Deepika's personal assistant on WhatsApp: the part shared by every way of connecting a number.
  * - Meta's WhatsApp Cloud API: server/routes/whatsapp.ts
  * - Twilio (its WhatsApp sandbox, or a number bought from Twilio): server/routes/twilioWhatsapp.ts
  * Each one turns its webhook into an InboundMessage and calls receiveMessage() with a transport that knows how to
- * send replies back the same way.
+ * send replies back the same way. Each also registers itself for messages the dashboard sends later (the booking
+ * confirmation), through registerOutboundTransport.
  *
- * It answers questions from the full business facts plus the RAG knowledge base, checks Deepika's availability
- * calendar (marked by her team in the dashboard), takes booking requests (saved to the same `bookings` table as the
- * website form, with source 'whatsapp'), and hands chats over to Deepika when asked.
+ * Pooja answers questions from the full business facts plus the RAG knowledge base, and takes customers through a
+ * booking (server/whatsappBooking.ts): the date and time on Deepika's calendar, the quotation (with brochures), the
+ * details and who does the makeup (from the ZIP code), then the 25% advance. A payment screenshot is saved for the
+ * team, who approve the booking in the dashboard. She hands chats over to Deepika when asked.
  *
  * Two ways to run it:
  * - Own number (default): the assistant has its own WhatsApp number, separate from Deepika's. Nobody reads these
@@ -19,21 +21,39 @@
  *
  * Every conversation is saved in the database (server/whatsappChats.ts), and each reply is written from what is
  * stored there. On Vercel each message can reach a different, freshly started instance with empty memory, so this is
- * what lets the assistant remember the chat: earlier questions, the date and details already given, and that it has
- * already welcomed the customer. Without a database the conversations are kept in memory instead.
+ * what lets the assistant remember the chat. Without a database the conversations are kept in memory instead.
  */
 import type { ChatCompletionMessageParam } from 'openai/resources';
 import { SERVICE_NOT_SPECIFIED } from '../src/data/leads.js';
-import { BUSINESS_INFO as B, WHATSAPP_CONTACTS } from '../src/data/portfolioData.js';
+import { ADVANCE_PERCENT, BUSINESS_INFO as B, WHATSAPP_CONTACTS } from '../src/data/portfolioData.js';
 import { retrieve, searchOnlyAnswer, type ChatMessage, type Retrieved } from './assistant.js';
-import { assistantStatusOf, checkAvailabilityTool, isIsoDate, todayInAtlanta } from './availability.js';
+import { checkAvailabilityTool, todayInAtlanta } from './availability.js';
 import { inBackground } from './background.js';
 import { getDb, pool } from './db.js';
-import { BOOKABLE_SERVICES, businessFacts } from './knowledge.js';
+import { businessFacts } from './knowledge.js';
 import { sourceFromAdUrl } from './leads.js';
 import { buildWhatsAppSystemPrompt, completeChatWithTools, NO_REPLY, openai, OPENAI_MODEL, type ChatTool } from './llm.js';
-import { chatStore as chats, type ChatInfo } from './whatsappChats.js';
-import { QUOTATIONS, QUOTE_OCCASIONS, WELCOME_MESSAGE, type QuoteOccasion } from './whatsappQuotes.js';
+import { chatStore as chats, type ChatConnection, type ChatInfo } from './whatsappChats.js';
+import {
+  bookingForPaymentProof,
+  currentBooking,
+  describeBooking,
+  PACKAGE_GUIDE,
+  PACKAGE_IDS,
+  requestAdvancePayment,
+  saveBookingDetails,
+  savePaymentProof,
+} from './whatsappBooking.js';
+import {
+  BROCHURES,
+  brochureUrl,
+  EXTRA_PROOF_MESSAGE,
+  PAYMENT_RECEIVED_MESSAGE,
+  QUOTATIONS,
+  QUOTE_OCCASIONS,
+  WELCOME_MESSAGE,
+  type QuoteOccasion,
+} from './whatsappQuotes.js';
 
 const LOG = '[whatsapp]';
 
@@ -58,8 +78,8 @@ const SEARCH_BUDGET_MS = 1000;
 const PROMPT_CACHE_KEY = 'dmh-whatsapp-assistant';
 /** Customer messages older than this (e.g. redelivered after downtime) are left for Deepika. */
 const MAX_MESSAGE_AGE_MS = 10 * 60_000;
-/** Earlier messages the model sees: plenty to collect a booking request (name, service, date, place, people, confirmation). */
-const MAX_HISTORY = 30;
+/** Earlier messages the model sees: plenty for a whole booking conversation. */
+const MAX_HISTORY = 40;
 /** Longest customer message kept, and longest question (messages sent together) the model answers. */
 const MAX_MESSAGE_CHARS = 1500;
 const MAX_QUESTION_CHARS = 2000;
@@ -72,10 +92,13 @@ const REPLY_CLAIM_MS = 100_000;
 const REPLY_WAIT_MS = 45_000;
 /** Photos, voice notes and files are acknowledged at most this often per chat. */
 const MEDIA_ACK_EVERY_MS = 30 * 60_000;
+/** Further payment screenshots sent together get one "got it", not one each. */
+const EXTRA_PROOF_ACK_EVERY_MS = 2 * 60_000;
+/** Largest payment screenshot or receipt kept (WhatsApp images are at most 5 MB). */
+const MAX_PROOF_BYTES = 10 * 1024 * 1024;
 /** WhatsApp's limit for a text message body is 4096 characters (transports split further if they need to). */
 const MAX_REPLY_CHARS = 4000;
 const FORGET_AFTER_MS = 24 * 3_600_000;
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const FALLBACK = SHARED_NUMBER
   ? `Thank you for your message! I don't have that detail on hand, but ${B.artist} will reply to you personally here soon.`
@@ -87,6 +110,8 @@ const HANDOFF_REPLY = SHARED_NUMBER
 const HANDOFF_DIRECT_REPLY = `Of course! To talk to ${B.artist} personally, please ${REACH_DEEPIKA}.`;
 /** How a tap on the "Talk to Deepika" button is saved in the conversation. */
 const TALK_TO_DEEPIKA = 'Talk to Deepika';
+/** A payment screenshot that couldn't be downloaded from WhatsApp. */
+const PROOF_FAILED_REPLY = `I'm so sorry, I couldn't open that file 🙏 Could you please send the payment screenshot again?`;
 
 /** What a tapped quick-reply button means, as the customer's message to the assistant (see the Meta transport). */
 export const BUTTON_MEANING: Record<string, string> = {
@@ -119,8 +144,12 @@ const FACTS = businessFacts();
 export interface WhatsAppTransport {
   /** For logs, e.g. "meta" or "twilio". */
   name: string;
+  /** Which connection this is, saved with the chat so the dashboard can message the customer later. */
+  connection: ChatConnection;
   /** Sends one reply; `withButtons` adds the welcome buttons where the connection supports them. */
   send(to: string, body: string, withButtons: boolean): Promise<void>;
+  /** Sends a picture from a public address (a brochure), with an optional caption. */
+  sendImage(to: string, url: string, caption?: string): Promise<void>;
   /** Blue ticks plus "typing…" while the answer is prepared. Best effort: never throws. */
   markReadAndTyping(messageId: string): void;
 }
@@ -148,9 +177,36 @@ export interface InboundMessage {
   text?: string | null;
   /** A photo, video, file or voice message, which the bot can't open. */
   media?: MediaKind;
+  /** Downloads the photo or file (for payment screenshots). */
+  fetchMedia?: () => Promise<{ data: Buffer; contentType: string }>;
   /** They tapped the "Talk to Deepika" button. */
   wantsDeepika?: boolean;
   referral?: Referral;
+}
+
+// ---------- Messages from the dashboard ----------
+
+const outboundTransports = new Map<string, (businessNumber?: string) => WhatsAppTransport>();
+
+/** Each connection registers how to message a customer outside a reply (Twilio: from which business number). */
+export function registerOutboundTransport(kind: string, make: (businessNumber?: string) => WhatsAppTransport) {
+  outboundTransports.set(kind, make);
+}
+
+/**
+ * Sends a customer a message from the dashboard (the booking confirmation) through the connection their chat came
+ * in on, and keeps it in the conversation so Pooja knows about it. Throws if it can't be sent.
+ */
+export async function sendToCustomer(waId: string, text: string): Promise<void> {
+  const chat = await chats.info(waId);
+  // Chats from before connections were saved: the only connection that's set up, if there's just one
+  const kind = chat?.transport ?? (outboundTransports.size === 1 ? [...outboundTransports.keys()][0] : undefined);
+  if (!kind) throw new Error("This customer's WhatsApp chat isn't known yet.");
+  const make = outboundTransports.get(kind);
+  if (!make) throw new Error(`WhatsApp via ${kind} isn't set up on this server.`);
+  await make(chat?.businessNumber).send(waId, text, false);
+  await chats.addReply(waId, text, []);
+  console.log(`${LOG} message from the dashboard sent to ${who(waId)} via ${kind}`);
 }
 
 // ---------- Chat state ----------
@@ -210,95 +266,40 @@ function toWhatsAppText(text: string): string {
   return out.length > MAX_REPLY_CHARS ? `${out.slice(0, MAX_REPLY_CHARS - 1)}…` : out;
 }
 
-const GREETING_WORDS = new Set(['hello', 'namaste', 'namaskar', 'namaskaram', 'vanakkam', 'good', 'morning', 'afternoon', 'evening', 'there', 'mam', 'madam', 'sir', 'ji', 'deepika', 'team']);
+const GREETING_WORDS = new Set(['hello', 'namaste', 'namaskar', 'namaskaram', 'vanakkam', 'good', 'morning', 'afternoon', 'evening', 'there', 'mam', 'madam', 'sir', 'ji', 'deepika', 'pooja', 'team']);
 const GREETING_WORD_RE = /^(h+i+|h+a+i+|h+e+y+|h+e+l+o+|h+l+o+)$/;
+const words = (message: string) => message.toLowerCase().replace(/[^\p{L}\s]/gu, ' ').split(/\s+/).filter(Boolean);
 
-/** A message that only says hello ("Hi", "hello madam 🙏"): the welcome message is the whole reply. */
+/** A message that only says hello ("Hi", "hello madam 🙏"). */
 function isGreeting(message: string): boolean {
-  const words = message.toLowerCase().replace(/[^\p{L}\s]/gu, ' ').split(/\s+/).filter(Boolean);
-  return words.length > 0 && words.length <= 5 && words.every((w) => GREETING_WORDS.has(w) || GREETING_WORD_RE.test(w));
+  const w = words(message);
+  return w.length > 0 && w.length <= 5 && w.every((x) => GREETING_WORDS.has(x) || GREETING_WORD_RE.test(x));
 }
 
-// ---------- Booking requests ----------
+/** "Hi, I need makeup services." (the website's WhatsApp button) and the like, without saying what for. */
+function isGeneralRequest(message: string): boolean {
+  const rest = words(message)
+    .filter((x) => !GREETING_WORDS.has(x) && !GREETING_WORD_RE.test(x))
+    .join(' ');
+  return /^(i m |im |i am |i )?(need|want|would like|wanted|am looking for|looking for|require|enquiring about|interested in)( to book| booking)?( a| an| some| your)? ?(makeup|make up|makeup and hair|hair and makeup)( artist)?( services?)?( please)?$/.test(rest);
+}
+
+/** The first reply is Pooja's welcome, word for word, when the first message only says hello or "I need makeup". */
+const welcomeIsTheWholeReply = (message: string) => isGreeting(message) || isGeneralRequest(message);
+
+// ---------- Ad leads and hand-overs ----------
 
 const text = (value: unknown, max: number) => (typeof value === 'string' ? value.trim().slice(0, max) : '');
 
-const CALENDAR_NOTE: Record<string, string> = {
-  fully_booked: 'The calendar showed this date as FULLY BOOKED when the request was sent.',
-  few_slots_left: 'The calendar showed only a few slots left on this date when the request was sent.',
-};
-
-/**
- * Saves a booking request from the chat. It updates instead of adding a row when the same customer already has
- * (a) a request for the same service from the last day (they were correcting a detail), or (b) an open lead from a
- * click-to-WhatsApp ad in the last 30 days that doesn't say what they want yet.
- * The result tells the model the date's calendar status; a full or nearly full date is also noted for Deepika.
- */
-async function saveBookingRequest(waId: string, chat: ChatInfo, args: Record<string, unknown>) {
-  if (!pool) return { ok: false, error: `Booking requests can't be saved right now. Tell the customer ${B.artist} will reply personally.` };
-
-  const fullName = text(args.full_name, 120);
-  const service = text(args.service, 200);
-  const eventDate = text(args.event_date, 10);
-  const eventLocation = text(args.event_location, 200);
-  const partySize = text(args.party_size, 100);
-  const email = text(args.email, 200);
-  let notes = text(args.notes, 2000);
-
-  const problems: string[] = [];
-  if (!fullName) problems.push('the full name is missing');
-  if (!BOOKABLE_SERVICES.includes(service)) problems.push(`the service must be one of: ${BOOKABLE_SERVICES.join('; ')}`);
-  if (!eventLocation) problems.push('the event location is missing');
-  if (eventDate) {
-    if (!isIsoDate(eventDate)) problems.push('the event date must be a real date (YYYY-MM-DD)');
-    else if (eventDate < todayInAtlanta().iso) problems.push('the event date is in the past');
-  }
-  if (email && !EMAIL_RE.test(email)) problems.push('the email address looks invalid');
-  if (problems.length) return { ok: false, error: `Not saved: ${problems.join('; ')}. Ask the customer about this.` };
-
-  const dateStatus = eventDate ? await assistantStatusOf(eventDate) : null;
-  if (dateStatus && CALENDAR_NOTE[dateStatus]) notes = [notes, CALENDAR_NOTE[dateStatus]].filter(Boolean).join('\n');
-  const calendar = dateStatus ? { date_status: dateStatus } : {};
-
-  const phone = `+${waId}`;
-  const db = getDb();
-  const earlier = await db.query<{ id: string; service: string }>(
-    `SELECT id, service FROM bookings
-      WHERE channel = 'whatsapp' AND phone = $1
-        AND ((service = $2 AND created_at > now() - interval '1 day')
-          OR (service = $3 AND created_at > now() - interval '30 days' AND status NOT IN ('converted', 'lost')))
-      ORDER BY id DESC LIMIT 1`,
-    [phone, service, SERVICE_NOT_SPECIFIED],
-  );
-  if (earlier.rows[0]) {
-    await db.query(
-      `UPDATE bookings SET full_name = $1, email = $2, service = $3, event_date = $4, event_location = $5,
-              party_size = $6, notes = $7, updated_at = now()
-        WHERE id = $8`,
-      [fullName, email || null, service, eventDate || null, eventLocation, partySize || null, notes || null, earlier.rows[0].id],
-    );
-    // A lead without a service yet (from an ad, or an earlier "talk to Deepika") now gets the booking details
-    const wasOpenLead = earlier.rows[0].service === SERVICE_NOT_SPECIFIED;
-    console.log(`${LOG} ${wasOpenLead ? 'lead' : 'booking request'} #${earlier.rows[0].id} from ${who(waId)} updated with the booking details`);
-    return wasOpenLead
-      ? { ok: true, request_number: earlier.rows[0].id, ...calendar }
-      : { ok: true, request_number: earlier.rows[0].id, updated_existing_request: true, ...calendar };
-  }
-  const { rows } = await db.query<{ id: string }>(
-    `INSERT INTO bookings (full_name, phone, email, service, event_date, event_location, party_size, notes, source, channel)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'whatsapp')
-     RETURNING id`,
-    [fullName, phone, email || null, service, eventDate || null, eventLocation, partySize || null, notes || null, chat.adSource ?? 'whatsapp'],
-  );
-  console.log(`${LOG} new booking request #${rows[0].id} from ${who(waId)} for "${service}"`);
-  return { ok: true, request_number: rows[0].id, ...calendar };
-}
+/** A fixed message, a brochure picture, or the model's reply, in the order they're sent. */
+type Outgoing = { text: string } | { image: string; caption?: string };
 
 interface Turn {
   handoff: boolean;
-  savedRequest?: string;
-  /** Quotations to send word for word, each as its own message before the reply (send_quotation). */
-  quotes: string[];
+  /** Brochures, quotations and the payment message, sent word for word before the reply. */
+  outbox: Outgoing[];
+  /** The advance was asked for in this turn (booking number). */
+  advanceRequested?: string;
   /** How long the knowledge search and the language model took, for the log. */
   searchMs?: number;
   aiMs?: number;
@@ -374,15 +375,22 @@ async function saveHandoffLead(waId: string, chat: ChatInfo, messages: ChatMessa
   return rows[0].id;
 }
 
+// ---------- The assistant's tools ----------
+
+/** Everything the customer wrote in the chat, so tools can check that a date or name really came from them. */
+const customerWords = (messages: ChatMessage[]) => messages.filter((m) => m.role === 'user').map((m) => m.content).join('\n');
+
 function toolsFor(waId: string, chat: ChatInfo, messages: ChatMessage[], turn: Turn): Record<string, ChatTool> {
+  const customerSaid = customerWords(messages);
   return {
-    check_availability: checkAvailabilityTool(`${LOG} ${who(waId)}`),
+    check_availability: checkAvailabilityTool(`${LOG} ${who(waId)}`, `+${waId}`, customerSaid),
+
     send_quotation: {
       definition: {
         type: 'function',
         function: {
           name: 'send_quotation',
-          description: `Send the customer ${B.artist}'s quotation for their occasion. It goes to them word for word, as its own message just before your reply. Occasions: ${Object.entries(QUOTE_OCCASIONS)
+          description: `Send the customer the brochure and quotation for their occasion, with the prices of the artist who'll do their makeup (${B.artist.split(' ')[0]} herself unless their saved ZIP code is outside the Atlanta area). It goes to them word for word, as its own message(s) just before your reply. Occasions: ${Object.entries(QUOTE_OCCASIONS)
             .map(([occasion, meaning]) => `${occasion} = ${meaning}`)
             .join('; ')}.`,
           strict: true,
@@ -397,41 +405,88 @@ function toolsFor(waId: string, chat: ChatInfo, messages: ChatMessage[], turn: T
       run: async (args) => {
         const occasion = text(args.occasion, 40);
         if (!Object.hasOwn(QUOTATIONS, occasion)) return { ok: false, error: `occasion must be one of: ${Object.keys(QUOTE_OCCASIONS).join(', ')}` };
-        const quote = QUOTATIONS[occasion as QuoteOccasion];
-        if (!turn.quotes.includes(quote)) turn.quotes.push(quote);
-        console.log(`${LOG} ${who(waId)}: sending the ${occasion} quotation`);
-        return { ok: true, note: "The quotation will be sent just before your reply. Don't repeat its prices or details in your reply." };
+        const booking = await currentBooking(waId);
+        const artist = (booking?.status !== 'confirmed' && booking?.artist) || 'deepika';
+        const quote = QUOTATIONS[occasion as QuoteOccasion][artist];
+        if (!quote) {
+          return {
+            ok: false,
+            error: `There's no senior artist price list for ${occasion}. Don't guess a price: tell the customer kindly that ${B.artist.split(' ')[0]}'s team will confirm the quote for their location, and call handoff_to_deepika (reason: "${occasion} quote outside Atlanta").`,
+          };
+        }
+        for (const image of BROCHURES[occasion as QuoteOccasion]?.[artist] ?? []) turn.outbox.push({ image: brochureUrl(image) });
+        if (!turn.outbox.some((m) => 'text' in m && m.text === quote)) turn.outbox.push({ text: quote });
+        chat.quotedArtist = artist;
+        await chats.setQuotedArtist(waId, artist);
+        console.log(`${LOG} ${who(waId)}: sending the ${occasion} quotation (${artist})`);
+        return {
+          ok: true,
+          prices_of: artist === 'deepika' ? 'Deepika herself (Atlanta area)' : 'a senior artist (outside the Atlanta area)',
+          note: `Don't repeat the quotation's prices or details. Put ${QUOTATION_MARK} on its own line in your reply where the brochure and quotation should appear: after anything you say first (good news, a few words about Deepika, "Here are our packages and pricing 👇"), before your question (e.g. "Have a look and let me know which one you like 😊"). Without it, they're sent before your whole reply.`,
+        };
       },
     },
-    save_booking_request: {
+
+    save_booking_details: {
       definition: {
         type: 'function',
         function: {
-          name: 'save_booking_request',
-          description: `Send the customer's booking request to ${B.artist}. Call it after the customer confirms the summary of their details. Calling it again for the same service updates their earlier request: use that when they correct a detail.`,
+          name: 'save_booking_details',
+          description: `Save the customer's booking details as you learn them: it creates their booking (a lead for ${B.artist.split(' ')[0]}'s team) the first time and updates it after. Pass only what's new or changed: empty strings and an empty items list keep what's saved. The result says who will do the makeup (from the ZIP code), the prices, and what's still needed.`,
           strict: true,
           parameters: {
             type: 'object',
             additionalProperties: false,
-            required: ['full_name', 'service', 'event_date', 'event_location', 'party_size', 'email', 'notes'],
+            required: ['full_name', 'contact_phone', 'event_type', 'event_date', 'event_time', 'event_address', 'zip_code', 'items', 'special_requirements', 'start_new_booking'],
             properties: {
-              full_name: { type: 'string', description: "The customer's full name, as they gave it." },
-              service: { type: 'string', enum: BOOKABLE_SERVICES, description: 'The service or package they want.' },
-              event_date: { type: 'string', description: 'Event date as YYYY-MM-DD, or an empty string if they have not decided yet.' },
-              event_location: { type: 'string', description: 'City or venue of the event, e.g. "Alpharetta, GA".' },
-              party_size: { type: 'string', description: 'Who needs makeup or hair, e.g. "Bride only" or "Bride + 3 family members".' },
-              email: { type: 'string', description: 'Email address, or an empty string if not given.' },
-              notes: { type: 'string', description: 'Other useful details: ready-by time, outfit, look preferences, other events, waitlist wish. Empty string if none.' },
+              full_name: { type: 'string', description: 'Their full name, as they typed it; or "".' },
+              contact_phone: { type: 'string', description: 'A phone number to reach them on, only if it is not this WhatsApp number; otherwise "".' },
+              event_type: { type: 'string', description: 'e.g. "Wedding", "Engagement", "Reception", "Birthday party"; or "".' },
+              event_date: { type: 'string', description: 'Event date as YYYY-MM-DD; or "".' },
+              event_time: { type: 'string', description: 'When the makeup should start, as HH:MM on the 24-hour clock (8 AM = "08:00"); or "".' },
+              event_address: { type: 'string', description: 'The complete address where the makeup will be done; or "".' },
+              zip_code: { type: 'string', description: 'The ZIP code of that address (copy it here even when it is part of the address); or "".' },
+              items: {
+                type: 'array',
+                description: `What they're booking and for how many people (an empty list keeps what's saved). Packages: ${PACKAGE_GUIDE}.`,
+                items: {
+                  type: 'object',
+                  additionalProperties: false,
+                  required: ['package', 'quantity'],
+                  properties: {
+                    package: { type: 'string', enum: PACKAGE_IDS },
+                    quantity: { type: 'integer', description: 'How many people (1 for the bride).' },
+                  },
+                },
+              },
+              special_requirements: { type: 'string', description: 'Anything special they asked for (look, outfit, skin, extra hairstyles…); or "".' },
+              start_new_booking: { type: 'boolean', description: 'true only when their earlier booking is already confirmed and these details are for a different, new event.' },
             },
           },
         },
       },
-      run: async (args) => {
-        const result = await saveBookingRequest(waId, chat, args);
-        if (result.ok && 'request_number' in result) turn.savedRequest = result.request_number;
-        return result;
+      run: (args) => saveBookingDetails(waId, chat, args, customerSaid),
+    },
+
+    request_advance_payment: {
+      definition: {
+        type: 'function',
+        function: {
+          name: 'request_advance_payment',
+          description: `Ask for the ${ADVANCE_PERCENT}% advance that confirms the booking. Call it only once the customer has agreed to the package and the final price (the senior artist's, if their event is outside the Atlanta area) and every detail is saved. It re-checks the calendar and sends the payment message (booking summary, amounts, payment details, asking for the screenshot) word for word.`,
+          strict: true,
+          parameters: { type: 'object', additionalProperties: false, required: [], properties: {} },
+        },
+      },
+      run: async () => {
+        const result = await requestAdvancePayment(waId, chat, customerSaid);
+        if (!result.ok) return result;
+        turn.outbox.push({ text: result.message });
+        turn.advanceRequested = result.bookingId;
+        return { ok: true, note: `The payment message will be sent word for word. Reply exactly ${NO_REPLY}, unless the customer asked something else.` };
       },
     },
+
     handoff_to_deepika: {
       definition: {
         type: 'function',
@@ -519,21 +574,45 @@ function within<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
 /** The model's reply when it has nothing to add (e.g. "NO_REPLY" or "NO_REPLY."). */
 const NO_REPLY_RE = new RegExp(`^\\W*${NO_REPLY}\\W*$`);
 
+/** Where in its reply the model wants the brochure and quotation to go. */
+const QUOTATION_MARK = '{{quotation}}';
+const QUOTATION_MARK_RE = /[ \t]*\{\{\s*quotation\s*\}\}[ \t]*/gi;
+/** "Here are our packages and pricing 👇" and the like: words that only make sense with a quotation under them. */
+const POINTS_AT_QUOTE = /here (are|is) (our|the|your)[^.!?\n]{0,60}(packages?|pricing|prices|quotation|brochure)|👇/i;
+
 /**
- * Writes the reply to `messages`: the stored conversation, ending with the customer's latest message(s). `welcomed`:
- * Deepika's welcome message has just been sent as the first reply. The reply is empty when there's nothing to add to
- * the welcome or to the quotations (`turn.quotes`), which are sent before it.
+ * The messages for one turn, in order: the model's reply split at its {{quotation}} mark with the fixed messages
+ * (brochures, quotations, the payment message) in between, or the fixed messages first when there's no mark.
  */
-async function answer(waId: string, chat: ChatInfo, messages: ChatMessage[], welcomed: boolean): Promise<{ reply: string; turn: Turn }> {
-  const turn: Turn = { handoff: false, quotes: [] };
+function inOrder(reply: string, fixed: Outgoing[]): Outgoing[] {
+  const texts = (s: string) => {
+    const t = toWhatsAppText(s.replace(QUOTATION_MARK_RE, ''));
+    return t ? [{ text: t }] : [];
+  };
+  const at = reply.search(QUOTATION_MARK_RE);
+  if (at < 0 || !fixed.length) return [...fixed, ...texts(reply)];
+  return [...texts(reply.slice(0, at)), ...fixed, ...texts(reply.slice(at))];
+}
+
+/**
+ * Writes the reply to `messages`: the stored conversation, ending with the customer's latest message(s). `firstReply`:
+ * nothing has been sent in this chat yet, so Pooja introduces herself. The reply is empty when the fixed messages in
+ * `turn.outbox` (sent before it) say everything.
+ */
+async function answer(waId: string, chat: ChatInfo, messages: ChatMessage[], firstReply: boolean): Promise<{ reply: string; turn: Turn }> {
+  const turn: Turn = { handoff: false, outbox: [] };
   const searchStarted = Date.now();
   const search = retrieve(messages).catch((err) => {
     console.error(`${LOG} knowledge search failed:`, err instanceof Error ? err.message : err);
     return NO_SEARCH_RESULTS;
   });
   // Without the language model the search result is the answer, so it is always waited for
-  if (!openai) return { reply: searchAnswerForWhatsApp(await search), turn };
+  if (!openai) return { reply: firstReply ? WELCOME_MESSAGE : searchAnswerForWhatsApp(await search), turn };
 
+  const booking = await currentBooking(waId).catch((err) => {
+    console.error(`${LOG} could not read the booking for ${who(waId)}:`, err instanceof Error ? err.message : err);
+    return null;
+  });
   const found = await within(search, SEARCH_BUDGET_MS);
   turn.searchMs = Date.now() - searchStarted;
   if (!found) console.log(`${LOG} ${who(waId)}: search not ready after ${SEARCH_BUDGET_MS} ms (search model still loading on a new server instance); answering from the business facts`);
@@ -549,7 +628,8 @@ async function answer(waId: string, chat: ChatInfo, messages: ChatMessage[], wel
     canSaveBookings: Boolean(pool),
     sharedNumber: SHARED_NUMBER,
     reachDeepika: REACH_DEEPIKA,
-    welcomed,
+    firstReply,
+    booking: describeBooking(booking, chat.quotedArtist, customerWords(messages)),
   });
   const script = scriptCheck(messages);
   const aiStarted = Date.now();
@@ -559,10 +639,15 @@ async function answer(waId: string, chat: ChatInfo, messages: ChatMessage[], wel
     const reply = await completeChatWithTools(prompt, toolsFor(waId, chat, messages, turn), {
       signal: AbortSignal.timeout(60_000),
       accept: script.accept,
+      // The reply points to a quotation ("Here are our packages 👇") that wasn't sent
+      revise: (r) =>
+        !turn.outbox.length && (new RegExp(QUOTATION_MARK_RE.source, 'i').test(r) || POINTS_AT_QUOTE.test(r))
+          ? `You put ${QUOTATION_MARK} in your reply but didn't call send_quotation, so nothing would be shown. Call send_quotation now for their occasion, then write your whole reply again.`
+          : null,
       cacheKey: PROMPT_CACHE_KEY,
     });
     if (NO_REPLY_RE.test(reply)) {
-      if (welcomed || turn.quotes.length) return { reply: '', turn };
+      if (turn.outbox.length) return { reply: '', turn };
     } else if (reply) {
       return { reply: script.accept(reply) ? reply : script.clean(reply), turn };
     }
@@ -571,13 +656,10 @@ async function answer(waId: string, chat: ChatInfo, messages: ChatMessage[], wel
   } finally {
     turn.aiMs = Date.now() - aiStarted;
   }
-  // The model failed after a tool may already have run: still tell the customer what happened
-  if (turn.savedRequest) {
-    return { reply: `Thank you! Your booking request #${turn.savedRequest} has been sent to ${B.artist}. She'll personally confirm availability and the quote, usually within 24 hours.`, turn };
-  }
+  // The model failed after a tool may already have run: what it decided still goes out
   if (turn.handoff) return { reply: HANDOFF_REPLY, turn };
-  // The welcome message has gone out, or a quotation will: better that alone than a guessed answer
-  if (welcomed || turn.quotes.length) return { reply: '', turn };
+  if (turn.outbox.length) return { reply: '', turn };
+  if (firstReply) return { reply: WELCOME_MESSAGE, turn };
   // The search has had more time by now
   return { reply: searchAnswerForWhatsApp((await within(search, SEARCH_BUDGET_MS)) ?? retrieved), turn };
 }
@@ -610,6 +692,25 @@ async function claimReplying(waId: string): Promise<string | null> {
   }
 }
 
+/** Sends brochures, fixed messages and the reply in order. A brochure that fails is skipped (its quotation still goes). */
+async function sendAll(waId: string, transport: WhatsAppTransport, parts: Outgoing[]): Promise<string[]> {
+  const sent: string[] = [];
+  for (const part of parts) {
+    if ('image' in part) {
+      try {
+        await transport.sendImage(waId, part.image, part.caption);
+        sent.push(`[Brochure picture: ${part.image}]`);
+      } catch (err) {
+        console.error(`${LOG} could not send a brochure to ${who(waId)}:`, err instanceof Error ? err.message : err);
+      }
+    } else {
+      await transport.send(waId, part.text, false);
+      sent.push(part.text);
+    }
+  }
+  return sent;
+}
+
 /**
  * Answers the customer's waiting messages, from the conversation stored so far. `latestId` is the newest message this
  * call was started for: if an even newer one is waiting, the call started for that one answers them all instead.
@@ -636,31 +737,29 @@ async function replyTo(waId: string, latestId: number, transport: WhatsAppTransp
     const question = waiting.map((m) => m.content).join('\n').slice(0, MAX_QUESTION_CHARS);
     const messages: ChatMessage[] = [...history, { role: 'user', content: question }];
 
-    // Deepika's welcome message is the first reply in every chat, sent straight away (with the buttons on Meta)
+    // Pooja's welcome is the whole first reply to a hello or "I need makeup services" (with the buttons on Meta)
     const firstReply = !history.some((m) => m.role === 'assistant');
-    let settles = answered;
-    if (firstReply) {
+    if (firstReply && welcomeIsTheWholeReply(question)) {
       await transport.send(waId, WELCOME_MESSAGE, true);
       await chats.addReply(waId, WELCOME_MESSAGE, answered);
-      settles = [];
-      if (isGreeting(question)) {
-        console.log(`${LOG} welcomed ${who(waId)} via ${transport.name}`);
-        return;
-      }
+      console.log(`${LOG} welcomed ${who(waId)} via ${transport.name} ${seconds(Date.now() - started)} after the ${seconds(GATHER_MS)} wait`);
+      return;
     }
 
     const { reply, turn } = await answer(waId, chat, messages, firstReply);
     // Coexistence: Deepika may have replied from her phone while the answer was being written
     if (SHARED_NUMBER && Date.now() < (await chats.pausedUntil(waId))) return;
-    // Quotations first, word for word, then the reply (empty when there's nothing to add)
-    const parts = [...turn.quotes, ...(reply ? [toWhatsAppText(reply)] : [])];
-    for (const part of parts) await transport.send(waId, part, false);
-    if (parts.length) await chats.addReply(waId, parts.join('\n\n'), settles);
+    // Brochures, quotations and the payment message word for word, where the reply puts them (or first)
+    const parts = reply === WELCOME_MESSAGE ? [{ text: reply }] : inOrder(reply, turn.outbox);
+    const sent = await sendAll(waId, transport, parts);
+    if (sent.length) await chats.addReply(waId, sent.join('\n\n'), answered);
+    else await chats.settle(waId, answered);
     // Coexistence: Deepika takes over this chat. Own number: nobody else answers here, so the bot keeps helping.
     if (turn.handoff && SHARED_NUMBER) await pauseBot(waId);
     const took = `${seconds(Date.now() - started)} after the ${seconds(GATHER_MS)} wait for follow-ups (search ${seconds(turn.searchMs)}, AI ${seconds(turn.aiMs)})`;
-    const what = [firstReply && 'welcome', turn.quotes.length && `${turn.quotes.length} quotation(s)`, reply && 'reply'].filter(Boolean).join(' + ');
-    console.log(`${LOG} sent ${what || 'nothing more'} to ${who(waId)} via ${transport.name} ${took}${turn.savedRequest ? ` (booking request #${turn.savedRequest})` : ''}${turn.handoff ? ' and handed over to Deepika' : ''}`);
+    const fixed = turn.outbox.length ? `${turn.outbox.length} fixed message(s)` : '';
+    const what = [fixed, reply && 'reply'].filter(Boolean).join(' + ');
+    console.log(`${LOG} sent ${what || 'nothing more'} to ${who(waId)} via ${transport.name} ${took}${turn.advanceRequested ? ` (advance asked for booking #${turn.advanceRequested})` : ''}${turn.handoff ? ' and handed over to Deepika' : ''}`);
   } catch (err) {
     console.error(`${LOG} could not reply to ${who(waId)}:`, err instanceof Error ? err.message : err);
   } finally {
@@ -693,6 +792,29 @@ async function handOver(waId: string, chat: ChatInfo, transport: WhatsAppTranspo
   console.log(`${LOG} ${who(waId)} tapped "Talk to Deepika"${SHARED_NUMBER ? '; bot paused in that chat' : ''}`);
 }
 
+/**
+ * A photo or file from a customer whose booking waits for the advance: their payment screenshot. It's saved for the
+ * team and the customer is thanked; nothing is marked as paid until the team approves the booking in the dashboard.
+ */
+async function receivePaymentProof(waId: string, m: InboundMessage, bookingId: string, transport: WhatsAppTransport, caption: string | null) {
+  const id = await chats.addCustomerMessage(waId, ['[The customer sent their payment screenshot]', caption].filter(Boolean).join('\n'), { messageId: m.id, waiting: false });
+  if (id === null) return; // delivered before, to another server instance
+  transport.markReadAndTyping(m.id);
+  let reply: string | null;
+  try {
+    const file = await m.fetchMedia!();
+    if (!file.data.length || file.data.length > MAX_PROOF_BYTES) throw new Error(`file of ${file.data.length} bytes`);
+    const first = await savePaymentProof(bookingId, file.data, file.contentType);
+    reply = first ? PAYMENT_RECEIVED_MESSAGE : (await chats.claimMediaAck(waId, EXTRA_PROOF_ACK_EVERY_MS)) ? EXTRA_PROOF_MESSAGE : null;
+  } catch (err) {
+    console.error(`${LOG} could not keep the payment screenshot from ${who(waId)}:`, err instanceof Error ? err.message : err);
+    reply = PROOF_FAILED_REPLY;
+  }
+  if (!reply) return;
+  await transport.send(waId, reply, false);
+  await chats.addReply(waId, reply, []);
+}
+
 // ---------- Incoming messages ----------
 
 /** A customer's message, from any connection. Returns at once; the reply is sent in the background. */
@@ -711,13 +833,21 @@ async function handleMessage(transport: WhatsAppTransport, m: InboundMessage) {
   const waId = m.from;
   const ad = m.referral?.source_type === 'ad' ? m.referral : undefined;
   const adSource = ad ? sourceFromAdUrl(ad.source_url) : undefined;
-  const chat = await chats.touch(waId, { profileName: m.profileName?.trim().slice(0, 80) || undefined, adSource });
+  const chat = await chats.touch(waId, { profileName: m.profileName?.trim().slice(0, 80) || undefined, adSource, connection: transport.connection });
 
   const msgText = m.text?.trim().slice(0, MAX_MESSAGE_CHARS) || null;
+  const paused = Date.now() < chat.pausedUntil;
+
+  // A screenshot (or PDF receipt) while their booking waits for the advance is the payment proof
+  if (!paused && (m.media === 'image' || m.media === 'document') && m.fetchMedia) {
+    const booking = await bookingForPaymentProof(waId).catch(() => null);
+    if (booking) return receivePaymentProof(waId, m, booking.id, transport, msgText);
+  }
+
   const media = m.media ? MEDIA[m.media] : undefined;
   // What to do with it: keep it as context only, answer it (after the short wait), hand over, or acknowledge media
   let action: 'context' | 'answer' | 'handover' | 'media_reply';
-  if (Date.now() < chat.pausedUntil) action = 'context'; // Deepika is handling this chat
+  if (paused) action = 'context'; // Deepika is handling this chat
   else if (m.wantsDeepika) action = 'handover';
   // Photos, voice notes and files are acknowledged at most every 30 minutes per chat; any caption is still answered
   else if (media && (await chats.claimMediaAck(waId, MEDIA_ACK_EVERY_MS))) action = openai || msgText ? 'answer' : 'media_reply';

@@ -12,6 +12,7 @@ import {
   BUTTON_MEANING,
   deepikaRepliedFromApp,
   receiveMessage,
+  registerOutboundTransport,
   who,
   type InboundMessage,
   type MediaKind,
@@ -63,8 +64,31 @@ async function graphPost(path: string, body: unknown): Promise<void> {
   if (!res.ok) throw new Error(`Graph API ${res.status}: ${(await res.text()).slice(0, 400)}`);
 }
 
+/** A photo or file a customer sent (payment screenshots): Meta gives a short-lived download address for its ID. */
+async function metaMedia(mediaId: string): Promise<{ data: Buffer; contentType: string }> {
+  const headers = { Authorization: `Bearer ${config.accessToken}` };
+  const info = await fetch(`${config.graphUrl}/${config.graphVersion}/${encodeURIComponent(mediaId)}`, { headers, signal: AbortSignal.timeout(15_000) });
+  if (!info.ok) throw new Error(`Graph API ${info.status} for media`);
+  const { url, mime_type } = (await info.json()) as { url?: string; mime_type?: string };
+  if (!url) throw new Error('Graph API gave no media address');
+  const file = await fetch(url, { headers, signal: AbortSignal.timeout(20_000) });
+  if (!file.ok) throw new Error(`media download failed: ${file.status}`);
+  return { data: Buffer.from(await file.arrayBuffer()), contentType: mime_type || file.headers.get('content-type')?.split(';')[0] || 'application/octet-stream' };
+}
+
 const metaTransport: WhatsAppTransport = {
   name: 'meta',
+  connection: { transport: 'meta' },
+  /** A picture by its public address (brochures). */
+  sendImage(to, link, caption) {
+    return graphPost(`${config.phoneNumberId}/messages`, {
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to,
+      type: 'image',
+      image: { link, ...(caption ? { caption: caption.slice(0, 1024) } : {}) },
+    });
+  },
   /** A text reply, or the same text with the welcome buttons under it. */
   send(to, body, withButtons) {
     const message =
@@ -94,6 +118,9 @@ const metaTransport: WhatsAppTransport = {
   },
 };
 
+/** Messages the dashboard sends later (the booking confirmation). */
+if (metaWhatsAppEnabled) registerOutboundTransport('meta', () => metaTransport);
+
 // ---------- Webhook payloads ----------
 
 interface MetaMessage {
@@ -105,9 +132,9 @@ interface MetaMessage {
   text?: { body?: string };
   button?: { text?: string };
   interactive?: { button_reply?: { id?: string; title?: string }; list_reply?: { id?: string; title?: string } };
-  image?: { caption?: string };
-  video?: { caption?: string };
-  document?: { caption?: string };
+  image?: { caption?: string; id?: string };
+  video?: { caption?: string; id?: string };
+  document?: { caption?: string; id?: string };
 }
 
 interface EchoMessage {
@@ -141,6 +168,7 @@ function toInbound(m: MetaMessage, profileName?: string): InboundMessage {
   else if (m.type === 'interactive') text = (reply?.id && BUTTON_MEANING[reply.id]) || reply?.title?.trim() || null;
   else if (m.type === 'image' || m.type === 'video' || m.type === 'document') text = m[m.type]?.caption?.trim() || null;
   const sentAt = Number(m.timestamp) * 1000;
+  const mediaId = m.type === 'image' || m.type === 'document' ? m[m.type]?.id : undefined;
   return {
     id: m.id,
     from: m.from,
@@ -148,6 +176,7 @@ function toInbound(m: MetaMessage, profileName?: string): InboundMessage {
     profileName,
     text,
     media: MEDIA_TYPES[m.type],
+    fetchMedia: mediaId ? () => metaMedia(mediaId) : undefined,
     wantsDeepika: m.type === 'interactive' && m.interactive?.button_reply?.id === 'deepika',
     referral: m.referral,
   };

@@ -7,8 +7,8 @@ import React from 'react';
 import { BUSINESS_INFO } from '../data/portfolioData';
 import { WhatsAppIcon } from './WhatsAppIcon';
 
-/** Opens a WhatsApp chat with the AI assistant, with "Hi" ready to send (it welcomes them and helps them book). */
-export const ASSISTANT_WHATSAPP_CHAT = `${BUSINESS_INFO.assistantWhatsappUrl}?text=${encodeURIComponent('Hi')}`;
+/** Opens a WhatsApp chat with Pooja, the AI assistant, with a first message ready to send (she welcomes them and helps them book). */
+export const ASSISTANT_WHATSAPP_CHAT = `${BUSINESS_INFO.assistantWhatsappUrl}?text=${encodeURIComponent('Hi, I need makeup services.')}`;
 
 interface WhatsAppButtonProps {
   /** Classes for the round button (size, colors, hover). */

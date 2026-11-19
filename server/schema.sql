@@ -57,6 +57,59 @@ CREATE TABLE IF NOT EXISTS availability (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 
+-- Bookings made with the WhatsApp assistant (Pooja): she collects the details, the customer pays the 25% advance and
+-- sends a screenshot, and the team approves the booking in the dashboard. A lead without booking_status is still
+-- collecting details (or is a plain enquiry).
+ALTER TABLE bookings ADD COLUMN IF NOT EXISTS event_type           text;           -- e.g. "Wedding", "Engagement"
+ALTER TABLE bookings ADD COLUMN IF NOT EXISTS event_time           time;           -- when the makeup starts
+ALTER TABLE bookings ADD COLUMN IF NOT EXISTS event_zip            text;
+ALTER TABLE bookings ADD COLUMN IF NOT EXISTS artist               text CHECK (artist IN ('deepika', 'senior'));
+ALTER TABLE bookings ADD COLUMN IF NOT EXISTS quote_items          jsonb;          -- [{package, title, quantity, unitPrice, perPerson}]
+ALTER TABLE bookings ADD COLUMN IF NOT EXISTS total_price          numeric(10, 2);
+ALTER TABLE bookings ADD COLUMN IF NOT EXISTS advance_amount       numeric(10, 2);
+ALTER TABLE bookings ADD COLUMN IF NOT EXISTS booking_status       text CHECK (booking_status IN ('awaiting_payment', 'payment_review', 'confirmed'));
+ALTER TABLE bookings ADD COLUMN IF NOT EXISTS payment_requested_at timestamptz;
+ALTER TABLE bookings ADD COLUMN IF NOT EXISTS payment_submitted_at timestamptz;
+ALTER TABLE bookings ADD COLUMN IF NOT EXISTS confirmed_at         timestamptz;
+ALTER TABLE bookings ADD COLUMN IF NOT EXISTS confirmed_by         bigint REFERENCES admin_users (id) ON DELETE SET NULL;
+ALTER TABLE bookings ADD COLUMN IF NOT EXISTS contact_phone        text;           -- if not the WhatsApp number
+ALTER TABLE bookings ADD COLUMN IF NOT EXISTS special_requirements text;
+
+CREATE INDEX IF NOT EXISTS bookings_booking_status_idx ON bookings (booking_status) WHERE booking_status IS NOT NULL;
+
+-- Payment screenshots (or PDF receipts) customers send on WhatsApp, for the team to check before approving.
+CREATE TABLE IF NOT EXISTS payment_proofs (
+  id           bigserial   PRIMARY KEY,
+  booking_id   bigint      NOT NULL REFERENCES bookings (id) ON DELETE CASCADE,
+  content_type text        NOT NULL,
+  data         bytea       NOT NULL,
+  created_at   timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS payment_proofs_booking_idx ON payment_proofs (booking_id);
+
+-- Times the team marks as taken on a day (bookings made elsewhere, personal time). Approved WhatsApp bookings take
+-- their time on their own, from bookings.event_time.
+CREATE TABLE IF NOT EXISTS calendar_blocks (
+  id         bigserial   PRIMARY KEY,
+  day        date        NOT NULL,
+  start_time time        NOT NULL,
+  end_time   time        NOT NULL CHECK (end_time > start_time),
+  note       text,                                    -- private team note
+  created_by bigint      REFERENCES admin_users (id) ON DELETE SET NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS calendar_blocks_day_idx ON calendar_blocks (day);
+
+-- Settings the team changes in the dashboard (/admin/settings), e.g. the payment details the assistant sends.
+CREATE TABLE IF NOT EXISTS settings (
+  key        text        PRIMARY KEY,
+  value      jsonb       NOT NULL,
+  updated_by bigint      REFERENCES admin_users (id) ON DELETE SET NULL,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
 -- The WhatsApp assistant's conversations, so it remembers each chat however many server instances answer it (on
 -- Vercel every message can reach a fresh instance with empty memory). One row per message, oldest first by turn_at.
 CREATE TABLE IF NOT EXISTS whatsapp_messages (
@@ -86,6 +139,14 @@ CREATE TABLE IF NOT EXISTS whatsapp_chats (
   last_message_at timestamptz NOT NULL DEFAULT now(),
   created_at      timestamptz NOT NULL DEFAULT now()
 );
+
+-- How to message the customer later (e.g. the booking confirmation sent when the team approves a booking): the
+-- connection their chat came in on, and for Twilio the business number they wrote to.
+ALTER TABLE whatsapp_chats ADD COLUMN IF NOT EXISTS transport       text;   -- 'meta' or 'twilio'
+ALTER TABLE whatsapp_chats ADD COLUMN IF NOT EXISTS business_number text;   -- e.g. '+19389464851'
+-- Whose prices the last quotation showed ('deepika' or 'senior'), so the advance is asked for only after the
+-- customer has seen the prices for the artist who will actually do their makeup.
+ALTER TABLE whatsapp_chats ADD COLUMN IF NOT EXISTS quoted_artist   text;
 
 -- Knowledge base for the RAG assistant (filled by: npm run db:ingest).
 CREATE TABLE IF NOT EXISTS knowledge_chunks (

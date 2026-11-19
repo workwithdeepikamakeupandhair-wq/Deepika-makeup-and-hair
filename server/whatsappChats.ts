@@ -9,6 +9,7 @@
  * Without a database the same is kept in memory, which lasts only while this server process runs.
  */
 import crypto from 'node:crypto';
+import type { Artist } from '../src/data/bookingFlow.js';
 import type { ChatMessage } from './assistant.js';
 import { pool } from './db.js';
 
@@ -18,6 +19,17 @@ export interface ChatInfo {
   adSource?: string;
   /** The assistant stays quiet in this chat until then (ms since 1970), because Deepika is handling it. */
   pausedUntil: number;
+  /** Whose prices the last quotation in this chat showed. */
+  quotedArtist?: Artist;
+  /** The connection the chat came in on ('meta' or 'twilio'), and for Twilio the business number they wrote to. */
+  transport?: string;
+  businessNumber?: string;
+}
+
+/** How a chat came in, so the team can message the customer later (e.g. the booking confirmation). */
+export interface ChatConnection {
+  transport: string;
+  businessNumber?: string;
 }
 
 export interface WaitingMessage {
@@ -36,8 +48,12 @@ export interface Conversation {
 }
 
 export interface ChatStore {
-  /** Creates the chat on its first message, or notes the customer's latest profile name and ad. */
-  touch(waId: string, update: { profileName?: string; adSource?: string }): Promise<ChatInfo>;
+  /** Creates the chat on its first message, or notes the customer's latest profile name, ad and connection. */
+  touch(waId: string, update: { profileName?: string; adSource?: string; connection?: ChatConnection }): Promise<ChatInfo>;
+  /** The chat's details, or null if this customer never wrote. */
+  info(waId: string): Promise<ChatInfo | null>;
+  /** Notes whose prices the latest quotation showed. */
+  setQuotedArtist(waId: string, artist: Artist): Promise<void>;
   /**
    * Saves a customer message: `waiting` ones need a reply, the others are only context (e.g. while Deepika is
    * handling the chat). Returns the message's number, or null if this message ID was saved before (a redelivery).
@@ -67,27 +83,46 @@ interface ChatRow {
   profile_name: string | null;
   ad_source: string | null;
   paused_until: Date | null;
+  quoted_artist: Artist | null;
+  transport: string | null;
+  business_number: string | null;
 }
+
+const CHAT_COLUMNS = 'profile_name, ad_source, paused_until, quoted_artist, transport, business_number';
 
 const chatInfo = (row: ChatRow | undefined): ChatInfo => ({
   profileName: row?.profile_name ?? undefined,
   adSource: row?.ad_source ?? undefined,
   pausedUntil: ms(row?.paused_until),
+  quotedArtist: row?.quoted_artist ?? undefined,
+  transport: row?.transport ?? undefined,
+  businessNumber: row?.business_number ?? undefined,
 });
 
 function databaseStore(db: NonNullable<typeof pool>): ChatStore {
   return {
-    async touch(waId, { profileName, adSource }) {
+    async touch(waId, { profileName, adSource, connection }) {
       const { rows } = await db.query<ChatRow>(
-        `INSERT INTO whatsapp_chats (wa_id, profile_name, ad_source) VALUES ($1, $2, $3)
+        `INSERT INTO whatsapp_chats (wa_id, profile_name, ad_source, transport, business_number) VALUES ($1, $2, $3, $4, $5)
          ON CONFLICT (wa_id) DO UPDATE
             SET profile_name = coalesce(excluded.profile_name, whatsapp_chats.profile_name),
                 ad_source = coalesce(excluded.ad_source, whatsapp_chats.ad_source),
+                transport = coalesce(excluded.transport, whatsapp_chats.transport),
+                business_number = coalesce(excluded.business_number, whatsapp_chats.business_number),
                 last_message_at = now()
-         RETURNING profile_name, ad_source, paused_until`,
-        [waId, profileName || null, adSource || null],
+         RETURNING ${CHAT_COLUMNS}`,
+        [waId, profileName || null, adSource || null, connection?.transport ?? null, connection?.businessNumber ?? null],
       );
       return chatInfo(rows[0]);
+    },
+
+    async info(waId) {
+      const { rows } = await db.query<ChatRow>(`SELECT ${CHAT_COLUMNS} FROM whatsapp_chats WHERE wa_id = $1`, [waId]);
+      return rows[0] ? chatInfo(rows[0]) : null;
+    },
+
+    async setQuotedArtist(waId, artist) {
+      await db.query('UPDATE whatsapp_chats SET quoted_artist = $2 WHERE wa_id = $1', [waId, artist]);
     },
 
     async addCustomerMessage(waId, content, { messageId, waiting }) {
@@ -138,7 +173,7 @@ function databaseStore(db: NonNullable<typeof pool>): ChatStore {
           [waId, limit],
         ),
         db.query<ChatRow & { recent_replies: number }>(
-          `SELECT profile_name, ad_source, paused_until,
+          `SELECT ${CHAT_COLUMNS},
                   (SELECT count(*)::int FROM whatsapp_messages m
                     WHERE m.wa_id = c.wa_id AND m.role = 'assistant' AND m.created_at > now() - interval '10 minutes') AS recent_replies
              FROM whatsapp_chats c WHERE wa_id = $1`,
@@ -256,12 +291,20 @@ function memoryStore(): ChatStore {
   }, 30 * 60_000).unref();
 
   return {
-    async touch(waId, { profileName, adSource }) {
+    async touch(waId, { profileName, adSource, connection }) {
       const c = chatFor(waId);
       c.lastMessageAt = Date.now();
       if (profileName) c.info.profileName = profileName;
       if (adSource) c.info.adSource = adSource;
+      if (connection) Object.assign(c.info, { transport: connection.transport, businessNumber: connection.businessNumber ?? c.info.businessNumber });
       return { ...c.info };
+    },
+    async info(waId) {
+      const c = chats.get(waId);
+      return c ? { ...c.info } : null;
+    },
+    async setQuotedArtist(waId, artist) {
+      chatFor(waId).info.quotedArtist = artist;
     },
     async addCustomerMessage(waId, content, { messageId, waiting }) {
       const c = chatFor(waId);

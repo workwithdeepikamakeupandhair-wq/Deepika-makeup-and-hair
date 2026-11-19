@@ -5,6 +5,7 @@
  * Only add facts you are happy for the assistant to repeat to clients word for word.
  */
 import {
+  ADVANCE_PERCENT,
   BOOKING_POLICY,
   bookingName,
   BRIDAL_PACKAGE,
@@ -150,8 +151,8 @@ export const FAQ: { q: string; a: string }[] = [
     a: `Deepika is based in ${B.location}. Her bridal package prices are for Atlanta. ${list(TRAVEL_POLICY)}.`,
   },
   {
-    q: 'Is there an advance or deposit? What is your cancellation, refund or postponement policy?',
-    a: `${list(BOOKING_POLICY)}.`,
+    q: 'Is there an advance or deposit? How much is the advance? What is your cancellation, refund or postponement policy?',
+    a: `A ${ADVANCE_PERCENT}% advance of the total package amount confirms the booking, and it is non-refundable. ${list(BOOKING_POLICY)}.`,
   },
   {
     q: 'What is your phone number, WhatsApp or Instagram? How do I contact you?',
@@ -227,7 +228,7 @@ export function businessFacts(): string {
     `About: ${B.bio}`,
     `Phone and WhatsApp: ${B.phonePrimaryCountry} ${B.phonePrimary} (main), ${B.phoneSecondaryCountry} ${B.phoneSecondary}. Email: ${B.email}. Instagram: ${B.instagramHandle} (${B.instagram}).`,
     `Price list: ${PRICE_LIST}`,
-    `Booking: customers send a booking request; ${B.artist} reviews requests within 24 hours and confirms each booking personally.`,
+    `Booking: on WhatsApp, Pooja (${B.artist}'s personal assistant) checks the date and time on ${B.artist}'s calendar, shares the packages and collects the details. In the Atlanta service area ${B.artist} does the makeup herself; outside it, one of her senior artists (personally trained by her, following her techniques and standards) does, at the senior artist's prices. A ${ADVANCE_PERCENT}% non-refundable advance of the total confirms the booking, once ${B.artist}'s team has verified the payment.`,
     '',
     `Services (name, price, details). Services ending in "(Senior Artist)" are done by a senior artist; all others by ${B.artist} herself:`,
     ...ALL_SERVICES.map((s) => `- ${describeService(s)}`),

@@ -20,6 +20,13 @@ export const SOURCE_STYLE: Record<string, { pill: string; dot: string }> = {
   website: { pill: 'bg-[#F4EFEA] text-[#7D6243]', dot: 'bg-[#C5A880]' },
 };
 
+/** WhatsApp booking stages (bookingFlow.ts): waiting for the advance, payment to check, confirmed. */
+export const BOOKING_STATUS_STYLE: Record<string, string> = {
+  awaiting_payment: 'bg-[#FFF5D9] text-[#8A6100] border-[#F3E2AE]',
+  payment_review: 'bg-[#FCE8F3] text-[#B4236E] border-[#F5C6DE]',
+  confirmed: 'bg-[#E4F4EA] text-[#1F7A45] border-[#C7E7D3]',
+};
+
 export const stageLabel = (id: string) => LEAD_STAGES.find((s) => s.id === id)?.label ?? id;
 export const sourceLabel = (id: string) => (LEAD_SOURCES as Record<string, string>)[id] ?? id;
 export const channelLabel = (id: string | null) => (id ? ((LEAD_CHANNELS as Record<string, string>)[id] ?? id) : null);

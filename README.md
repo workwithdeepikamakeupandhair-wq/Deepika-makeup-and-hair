@@ -119,20 +119,41 @@ and the prompt in `server/llm.ts`. A number can be connected in two ways, and bo
 | **Twilio** (the WhatsApp sandbox for testing, or a number bought from Twilio) | `/api/twilio/whatsapp` | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` | `server/routes/twilioWhatsapp.ts` |
 | **Meta's Cloud API** (a number registered directly with Meta) | `/api/whatsapp/webhook` | the four `WHATSAPP_*` values | `server/routes/whatsapp.ts` |
 
-**Welcome.** The first reply welcomes the customer by name to Deepika Makeup & Hair and asks what occasion they need
-makeup or hair for, and on which date. If their first message already asks something or gives details, that's answered
-first, and the bot asks only for what's still missing.
+**Pooja.** The assistant is *Pooja, Deepika's personal assistant*: warm, natural and never pushy, with short messages
+rather than forms (the personality and the booking journey are in `buildWhatsAppSystemPrompt`). The website's WhatsApp
+buttons open the chat with "Hi, I need makeup services." ready to send. That message, or a plain hello, gets Pooja's
+welcome word for word (`WELCOME_MESSAGE` in `server/whatsappQuotes.ts`). Any other first message gets a reply in which
+she introduces herself.
 
-**Availability.** When a customer mentions a date or asks whether Deepika is free, the assistant checks the
-[availability calendar](#availability-calendar-admincalendar) that Deepika's team keeps in the dashboard:
+**The booking journey** (`server/whatsappBooking.ts`). The model handles the conversation; prices, the artist, the
+advance and the calendar are worked out in code.
 
-- **Open** (marked Free, or not marked): it says so and offers to take a booking request.
-- **Few slots left:** it says only a few slots are left and suggests sending the request soon.
-- **Fully booked:** it apologizes, names the nearest open dates within a week either side (looked up, never guessed),
-  and offers to send the request anyway in case a slot opens up.
+1. **Occasion:** bridal, engagement, reception, party, family, groom, or a combination.
+2. **Date and time:** checked on the [calendar](#availability-calendar-admincalendar) down to the time of day. If
+   the time is taken, Pooja offers only times the calendar shows open: one hour earlier or later first, then others
+   that day. She can only check dates the customer actually wrote: the tool needs their words and verifies them.
+3. **About Deepika:** a few words about her, once.
+4. **Brochure and quotation:** sent word for word (brochure pictures first, if any are listed in `BROCHURES`).
+5. **Details:** name, phone, event type, the complete address, the ZIP code and any special requirements, saved as
+   they come (the booking is a lead in the dashboard from the first detail).
+6. **Artist:** the ZIP code decides. In the Atlanta service area (Settings) Deepika does the makeup herself at her
+   prices. Outside it, one of her senior artists does, at the senior artist's prices, and Pooja reassures the
+   customer, sends the senior quotation and waits for their OK. Occasions with no senior price list (engagement, house
+   warming, half saree, party, separate charges) go to Deepika's team for a quote.
+7. **Advance:** once everything is agreed, the payment message goes out word for word. It has the booking summary,
+   the total, the 25% non-refundable advance and the balance, plus the payment details from Settings, and asks for the
+   payment screenshot. The calendar is checked again first. Without payment details in Settings, Pooja passes the
+   customer to Deepika instead.
+8. **Screenshot:** a photo or PDF sent while the booking waits for the advance is saved as the payment proof. The
+   customer is thanked word for word and the booking shows under *Payments to verify*. Nothing is marked paid
+   automatically.
+9. **Approval:** the team checks the payment in the lead's panel and clicks **Approve booking**. The booking becomes
+   confirmed (lead stage *Converted*), its time stays taken on the calendar, and the customer gets the confirmation
+   on WhatsApp. **Payment not received — ask again** sends them back to step 8 with a polite message. WhatsApp only
+   delivers these within 24 hours of the customer's last message; the panel warns when that window has passed.
 
-It never calls a date reserved: Deepika still confirms every booking herself. Requests for a date marked Fully booked or
-Few slots left say so in "What they told us", so the dashboard shows it.
+A time is held while the customer is asked to pay (24 hours), while their screenshot is checked, and once confirmed,
+so two customers can't pay for the same time. Only Deepika's own bookings take her time; a senior artist's don't.
 
 **Its own number (default).** The assistant has its own WhatsApp number, separate from Deepika's, and nobody reads those
 chats. So for anything personal it gives Deepika's own WhatsApp links and phone, and when a customer asks for her, it
@@ -140,18 +161,18 @@ saves them as a lead in the dashboard so she can contact them. The other way to 
 (`WHATSAPP_COEXISTENCE=true`), where the bot answers on Deepika's own number and she reads and replies in the same chats.
 See [Going live with coexistence](#going-live-with-coexistence).
 
-**Answers.** Every question is sent with the full business facts: all services with durations and what's included,
-location and service area, contact numbers, certification, pricing policy and the FAQ (`businessFacts()` in
-`server/knowledge.ts`). It also gets the closest knowledge-base entries (looks, Instagram captions, reviews). It never
-invents prices, policies, addresses or products, and takes availability only from the calendar. For anything it doesn't know (trial sessions, deposits,
-studio address, brands…), it offers to pass the question to Deepika and gives her direct WhatsApp. With coexistence it
-says she'll reply in the chat. It replies in the customer's language and declines off-topic requests.
+**Answers.** Every question is sent with the full business facts: all services with what's included, location and
+service area, contact numbers, certification, pricing policy and the FAQ (`businessFacts()` in `server/knowledge.ts`).
+It also gets the closest knowledge-base entries (looks, Instagram captions, reviews) and the customer's booking so far.
+It never invents prices, policies, addresses or products, and takes availability only from the calendar. For anything
+it doesn't know (trial sessions, discounts, studio address, brands…), it offers to pass the question to Deepika and
+gives her direct WhatsApp. With coexistence it says she'll reply in the chat. It replies in the customer's language and
+declines off-topic requests.
 
-**Booking requests.** The assistant collects the name, service, date, location and number of people, sends a summary, and
-saves the request **only after the customer confirms**. Requests go into the same `bookings` table as the website form,
-with `source = 'whatsapp'` and the customer's WhatsApp number as `phone`. The customer gets a request number. It's never
-called a confirmed booking, because Deepika confirms availability and the quote herself. If the customer corrects a
-detail within a day, the same request is updated.
+**Bookings in the database.** A WhatsApp booking is a row in the same `bookings` table as the website form
+(`channel = 'whatsapp'`, the customer's WhatsApp number as `phone`), with its time, ZIP, artist, priced items
+(`quote_items`), total, advance and `booking_status` (`awaiting_payment` → `payment_review` → `confirmed`). Screenshots
+are in `payment_proofs`.
 
 **Each incoming message:**
 
@@ -165,7 +186,9 @@ detail within a day, the same request is updated.
     phone, and the bot keeps answering if they ask more.
   - *Coexistence:* the bot says Deepika will reply here and stays quiet in that chat for
     `WHATSAPP_HUMAN_TAKEOVER_HOURS` (default 12).
-- **Photos, videos, files and voice notes:** a short reply, at most every 30 minutes per chat. The bot can't see them,
+- **Payment screenshots:** see step 8 above. A photo or PDF from a customer whose booking waits for the advance is
+  downloaded (Twilio: with the account credentials; Meta: through the Graph API) and kept for the team.
+- **Other photos, videos, files and voice notes:** a short reply, at most every 30 minutes per chat. The bot can't see them,
   so it asks for them to be sent to Deepika's own WhatsApp; with coexistence it says she'll look at them. Voice notes
   also get a request to type the question. Stickers and reactions are ignored.
 - **Old messages:** anything more than 10 minutes old (e.g. redelivered after downtime) is left for Deepika (Meta only;
@@ -179,7 +202,7 @@ detail within a day, the same request is updated.
   again before it's sent. A reply in Hindi script to a customer who writes Hindi or Hinglish is fine.
 
 **Conversations are saved in the database** (`server/whatsappChats.ts`; tables `whatsapp_messages` and `whatsapp_chats`
-from `npm run db:setup`). Every reply is written from the stored chat (the last 30 messages), so the bot remembers it
+from `npm run db:setup`). Every reply is written from the stored chat (the last 40 messages), so the bot remembers it
 across restarts and across Vercel instances: it doesn't welcome the customer twice or ask again for details they gave.
 The database also makes sure only one reply is written per chat at a time, and that a message redelivered to another
 instance is answered once. Without `DATABASE_URL`, conversations are kept in memory and a restart forgets them. With
@@ -201,7 +224,7 @@ doesn't allow function tools (the calendar check) together with reasoning on tha
    page: select **Inbound**, choose **Custom** under **Auto-Reply settings**, and add the same webhook. Leave the status
    callback empty: the bot asks for delivery reports itself. Until this is set, Twilio answers every message itself
    with "Standard auto-reply…".
-5. **Try it:** send "Hi" from the phone that joined. The bot welcomes you and asks for the occasion and date.
+5. **Try it:** send "Hi, I need makeup services." from the phone that joined. Pooja welcomes you and asks what it's for.
 
 **Trial accounts can't send the bot's replies.** Twilio's trial only lets messages use `To`, `From`, `StatusCallback` and
 a `ContentSid` pointing at one of Twilio's own templates ("You won't be able to write your own message"). TwiML replies
@@ -326,9 +349,13 @@ change), and say whether it's free or booked only from these marks.
 
 | Mark | What WhatsApp customers hear |
 |---|---|
-| **Free** / not marked | The date is open; the bot offers to take their booking request |
-| **Few slots left** | Only a few slots are left, so they should send the request soon |
-| **Fully booked** | The date is booked, plus the nearest open dates, and the request can still go to Deepika in case a slot opens up |
+| **Free** / not marked | The date is open (and the time, unless it's taken) |
+| **Few slots left** | Only a few slots are left that day |
+| **Fully booked** | The date is booked, plus the nearest open dates |
+
+**Times of day.** A time is free unless the day is Fully booked, a **blocked time** covers it, or one of Deepika's
+WhatsApp bookings overlaps it (each takes the booking length from Settings). Select a day to see its booked times and
+to block one (e.g. a booking made outside WhatsApp: start, end, private note). Blocks are stored in `calendar_blocks`.
 
 - **Mark days:** click a day, then choose a mark. *Select several days* (or Ctrl/⌘-click, or Shift-click for a range)
   marks many at once. *Clear mark* makes a day open again. Past days can't be changed. After a mark is saved, the next
@@ -339,6 +366,16 @@ change), and say whether it's free or booked only from these marks.
 
 Days are stored in the `availability` table (one row per marked day). "Today" follows Atlanta time, as the bot does.
 Run `npm run db:setup` once to create the table on a new database.
+
+### Settings (/admin/settings)
+
+Booking settings the team can change without a redeploy (stored in the `settings` table):
+
+- **Payment details:** sent word for word in the advance request (e.g. `Zelle: +1 980-497-7720 (Deepika S)`). Until
+  it's filled in, Pooja can't ask for the advance and passes those customers to Deepika.
+- **Booking length:** how long one booking takes on the calendar (default 2 hours).
+- **Atlanta service area:** ZIP codes or their first digits (default `300, 301, 302, 303, 311, 399`, the USPS
+  Atlanta-area mail centres). Inside: Deepika herself and her prices. Outside: a senior artist and theirs.
 
 ### Leads from Meta ads
 

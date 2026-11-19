@@ -1,13 +1,15 @@
 /**
- * Availability calendar: the team marks days as Free, Few slots left or Fully booked, and the WhatsApp assistant
- * reads these marks when a customer asks whether Deepika is free on a date. Unmarked days count as open.
- * Each day also shows how many leads have their event on it, so the team can see what's already requested.
+ * Availability calendar: the team marks days as Free, Few slots left or Fully booked, and blocks the times it's busy.
+ * The WhatsApp assistant reads these when a customer asks whether Deepika is free on a date or at a time. Unmarked
+ * days count as open. Each day also shows how many leads have their event on it and its booked times (the team's
+ * blocks and the WhatsApp bookings), so the team can see what's already taken.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronLeft, ChevronRight, Eraser, MessageCircle, MousePointerClick, RefreshCw, Users } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Clock, Eraser, MessageCircle, MousePointerClick, RefreshCw, Trash2, Users } from 'lucide-react';
 import { AVAILABILITY_STATUSES, MAX_DAYS_PER_CHANGE, type AvailabilityDay, type AvailabilityStatus, type CalendarLead } from '../data/availability';
+import { bookingStatusLabel, timeLabel, type CalendarAppointment, type TimeBlock } from '../data/bookingFlow';
 import { api, NotLoggedIn } from './api';
-import { STAGE_STYLE, stageLabel } from './format';
+import { BOOKING_STATUS_STYLE, STAGE_STYLE, stageLabel } from './format';
 
 /** "Today" and "past" follow Atlanta time, like the assistant. */
 const TIME_ZONE = 'America/New_York';
@@ -61,11 +63,21 @@ const statusLabel = (status: AvailabilityStatus | undefined) => AVAILABILITY_STA
 
 /** What the WhatsApp assistant tells a customer who asks about a day with this mark. */
 const ASSISTANT_SAYS: Record<AvailabilityStatus | 'none', string> = {
-  available: 'the date is open, and offers to take their booking request.',
-  none: 'the date is open (nothing is marked), and offers to take their booking request.',
-  limited: 'only a few slots are left that day, so they should send their request soon.',
-  booked: 'the date is fully booked, suggests the nearest open dates, and offers to pass the request on in case a slot opens up.',
+  available: 'the date is open. For the time they ask for, it checks the booked times below and offers the nearest free times if it’s taken.',
+  none: 'the date is open (nothing is marked). For the time they ask for, it checks the booked times below and offers the nearest free times if it’s taken.',
+  limited: 'only a few slots are left that day, so they should book soon. Times are still checked against the booked times below.',
+  booked: 'the date is fully booked at any time, and suggests the nearest open dates instead.',
 };
+
+/** "08:00" + hours → "10:00" (stops at 23:59). */
+const addHours = (hhmm: string, hours: number) => {
+  const [h, m] = hhmm.split(':').map(Number);
+  const total = Math.min(h * 60 + m + Math.round(hours * 60), 23 * 60 + 59);
+  return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
+};
+
+/** One booked time on a day: a WhatsApp booking or a team block. */
+type BookedTime = { kind: 'appointment'; start: string; end: string; item: CalendarAppointment } | { kind: 'block'; start: string; end: string; item: TimeBlock };
 
 const WEEKDAYS = Array.from({ length: 7 }, (_, i) => fmt(addDays('2026-11-01', i), { weekday: 'short' })); // Nov 1, 2026 is a Sunday
 
@@ -78,6 +90,9 @@ export const CalendarPage: React.FC<{ onLoggedOut: () => void }> = ({ onLoggedOu
   const grid = useMemo(() => gridFor(month), [month]);
   const [days, setDays] = useState<Record<string, AvailabilityDay>>({});
   const [leads, setLeads] = useState<CalendarLead[]>([]);
+  const [blocks, setBlocks] = useState<TimeBlock[]>([]);
+  const [appointments, setAppointments] = useState<CalendarAppointment[]>([]);
+  const [appointmentHours, setAppointmentHours] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [selected, setSelected] = useState<string[]>([]);
@@ -109,6 +124,9 @@ export const CalendarPage: React.FC<{ onLoggedOut: () => void }> = ({ onLoggedOu
         if (id !== latestRequest.current) return; // the month changed meanwhile
         setDays(Object.fromEntries(data.days.map((d) => [d.date, d])));
         setLeads(data.leads);
+        setBlocks(data.blocks ?? []);
+        setAppointments(data.appointments ?? []);
+        setAppointmentHours(data.appointmentHours ?? null);
         setError('');
       } catch (err) {
         if (id === latestRequest.current) handleError(err);
@@ -134,6 +152,15 @@ export const CalendarPage: React.FC<{ onLoggedOut: () => void }> = ({ onLoggedOu
     for (const l of leads) (map[l.eventDate] ??= []).push(l);
     return map;
   }, [leads]);
+
+  /** Each day's booked times (WhatsApp bookings and team blocks), earliest first. */
+  const timesByDay = useMemo(() => {
+    const map: Record<string, BookedTime[]> = {};
+    for (const a of appointments) (map[a.date] ??= []).push({ kind: 'appointment', start: a.start, end: a.end, item: a });
+    for (const b of blocks) (map[b.date] ??= []).push({ kind: 'block', start: b.start, end: b.end, item: b });
+    for (const list of Object.values(map)) list.sort((x, y) => x.start.localeCompare(y.start) || x.end.localeCompare(y.end));
+    return map;
+  }, [appointments, blocks]);
 
   const monthKey = `${month.year}-${String(month.month + 1).padStart(2, '0')}`;
   const monthCounts = useMemo(() => {
@@ -234,6 +261,58 @@ export const CalendarPage: React.FC<{ onLoggedOut: () => void }> = ({ onLoggedOu
     }
   };
 
+  // ----- One selected day: its booked times, and blocking a time -----
+  const [blockStart, setBlockStart] = useState('');
+  const [blockEnd, setBlockEnd] = useState('');
+  const [blockNote, setBlockNote] = useState('');
+  const [blockSaving, setBlockSaving] = useState(false);
+  const [blockError, setBlockError] = useState('');
+  const [removing, setRemoving] = useState<string | null>(null);
+  useEffect(() => {
+    // another day was picked
+    setBlockStart('');
+    setBlockEnd('');
+    setBlockNote('');
+    setBlockError('');
+  }, [single]);
+
+  const addBlock = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!single) return;
+    if (!blockStart || !blockEnd) return setBlockError('Choose a start and an end time.');
+    if (blockEnd <= blockStart) return setBlockError('The end time must be after the start time.');
+    setBlockSaving(true);
+    setBlockError('');
+    try {
+      const block = await api.addTimeBlock(single, blockStart, blockEnd, blockNote.trim() || null);
+      setBlocks((prev) => [...prev, block]);
+      setBlockStart('');
+      setBlockEnd('');
+      setBlockNote('');
+      startFresh.current = true;
+      setAnnouncement(`${timeLabel(block.start)} to ${timeLabel(block.end)} blocked on ${fmt(single, { month: 'short', day: 'numeric' })}.`);
+    } catch (err) {
+      if (err instanceof NotLoggedIn) onLoggedOut();
+      else setBlockError(err instanceof Error ? err.message : 'Something went wrong.');
+    } finally {
+      setBlockSaving(false);
+    }
+  };
+
+  const removeBlock = async (block: TimeBlock) => {
+    setRemoving(block.id);
+    try {
+      await api.removeTimeBlock(block.id);
+      setBlocks((prev) => prev.filter((b) => b.id !== block.id));
+      setAnnouncement(`${timeLabel(block.start)} to ${timeLabel(block.end)} is free again.`);
+    } catch (err) {
+      handleError(err);
+      void load(true); // e.g. someone else already removed it
+    } finally {
+      setRemoving(null);
+    }
+  };
+
   const currentStatus = single ? singleDay?.status : selected.length && selected.every((d) => days[d]?.status === days[selected[0]]?.status) ? days[selected[0]]?.status : undefined;
   const sortedSelection = [...selected].sort();
   /** Which WhatsApp answer to describe; none when the selected days have different marks. */
@@ -244,8 +323,10 @@ export const CalendarPage: React.FC<{ onLoggedOut: () => void }> = ({ onLoggedOu
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="font-serif text-3xl sm:text-4xl">Calendar</h1>
-          <p className="mt-1 max-w-2xl text-sm text-[#6A5F56]">
-            Mark the days you're free or fully booked. The WhatsApp assistant and the website chat check this calendar whenever a customer asks about a date. Days you don't mark count as open.
+          <p className="mt-1 max-w-3xl text-sm text-[#6A5F56]">
+            Mark the days you're free or fully booked, and block the times you're busy. The WhatsApp assistant and the website chat check this calendar whenever a customer asks
+            about a date or a time. A time is free unless the day is fully booked, you've blocked it, or one of Deepika's WhatsApp bookings overlaps it (each booking takes{' '}
+            {appointmentHours ? `${appointmentHours} hour${appointmentHours === 1 ? '' : 's'}` : 'the booking length'}, set in Settings). Days you don't mark count as open.
           </p>
         </div>
         <button
@@ -312,6 +393,9 @@ export const CalendarPage: React.FC<{ onLoggedOut: () => void }> = ({ onLoggedOu
             <li className="inline-flex items-center gap-1.5">
               <Users aria-hidden className="w-3.5 h-3.5 text-[#9E7D53]" /> Leads with their event that day
             </li>
+            <li className="hidden sm:inline-flex items-center gap-1.5">
+              <Clock aria-hidden className="w-3.5 h-3.5 text-[#9E7D53]" /> Booked times
+            </li>
           </ul>
 
           {/* Weekday names + days */}
@@ -328,6 +412,7 @@ export const CalendarPage: React.FC<{ onLoggedOut: () => void }> = ({ onLoggedOu
               const style = day ? STATUS_STYLE[day.status] : null;
               const isSelected = selected.includes(date);
               const n = leadsByDay[date]?.length ?? 0;
+              const times = timesByDay[date]?.length ?? 0;
               return (
                 <button
                   key={date}
@@ -336,7 +421,7 @@ export const CalendarPage: React.FC<{ onLoggedOut: () => void }> = ({ onLoggedOu
                   onClick={(e) => pick(date, e)}
                   disabled={past}
                   aria-pressed={isSelected}
-                  aria-label={`${fmt(date, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}: ${statusLabel(day?.status)}${n ? `, ${n} lead${n > 1 ? 's' : ''}` : ''}${date === today ? ' (today)' : ''}`}
+                  aria-label={`${fmt(date, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}: ${statusLabel(day?.status)}${n ? `, ${n} lead${n > 1 ? 's' : ''}` : ''}${times ? `, ${times} booked time${times > 1 ? 's' : ''}` : ''}${date === today ? ' (today)' : ''}`}
                   className={`relative flex min-h-[54px] sm:min-h-[92px] flex-col items-start gap-1 rounded-lg sm:rounded-xl border p-1.5 sm:p-2 text-left transition-[box-shadow,background-color] outline-none focus-visible:ring-2 focus-visible:ring-[#9E7D53] ${
                     style ? style.cell : 'border-[#EFE9E2] bg-white hover:bg-[#FCFAF7]'
                   } ${inMonth ? '' : 'opacity-45'} ${past ? 'cursor-default opacity-40' : 'cursor-pointer'} ${
@@ -363,9 +448,18 @@ export const CalendarPage: React.FC<{ onLoggedOut: () => void }> = ({ onLoggedOu
                       {day.note}
                     </span>
                   )}
-                  {n > 0 && (
-                    <span aria-hidden className="absolute bottom-1 right-1 sm:bottom-auto sm:top-1.5 sm:right-1.5 inline-flex items-center gap-0.5 rounded-full bg-white/90 px-1 sm:px-1.5 py-0.5 text-[10px] font-semibold text-[#7D6243]">
-                      <Users className="hidden sm:block w-3 h-3" /> {n}
+                  {(n > 0 || times > 0) && (
+                    <span aria-hidden className="absolute bottom-1 right-1 sm:bottom-auto sm:top-1.5 sm:right-1.5 flex items-center gap-1">
+                      {times > 0 && (
+                        <span className="hidden sm:inline-flex items-center gap-0.5 rounded-full bg-white/90 px-1.5 py-0.5 text-[10px] font-semibold text-[#5A4D42]">
+                          <Clock className="w-3 h-3" /> {times}
+                        </span>
+                      )}
+                      {n > 0 && (
+                        <span className="inline-flex items-center gap-0.5 rounded-full bg-white/90 px-1 sm:px-1.5 py-0.5 text-[10px] font-semibold text-[#7D6243]">
+                          <Users className="hidden sm:block w-3 h-3" /> {n}
+                        </span>
+                      )}
                     </span>
                   )}
                 </button>
@@ -386,10 +480,14 @@ export const CalendarPage: React.FC<{ onLoggedOut: () => void }> = ({ onLoggedOu
                 Tap a day, then choose <strong>Free</strong>, <strong>Few slots left</strong> or <strong>Fully booked</strong>. To mark several days at once, turn on
                 “Select several days” (or Ctrl/⌘-click them).
               </p>
+              <p className="mt-2 text-sm text-[#6A5F56] leading-relaxed">
+                A single day also shows its <strong>booked times</strong>: Deepika's WhatsApp bookings, and the times you block yourself (for example a booking made by phone).
+              </p>
               <div className="mt-4 flex gap-3 rounded-xl bg-[#F6EFE7] p-3.5 text-sm text-[#5A4D42]">
                 <MessageCircle className="w-4 h-4 mt-0.5 shrink-0 text-[#25D366]" aria-hidden />
                 <p>
-                  When a customer asks the WhatsApp assistant or the website chat about a date, it checks here and answers free or booked from your marks. Fully booked days get the nearest open dates suggested instead.
+                  When a customer asks the WhatsApp assistant or the website chat about a date or a time, it checks here and answers free or booked from your marks and booked
+                  times. Fully booked days get the nearest open dates suggested instead, and a taken time the nearest free times that day.
                 </p>
               </div>
             </>
@@ -468,6 +566,117 @@ export const CalendarPage: React.FC<{ onLoggedOut: () => void }> = ({ onLoggedOu
                     )}
                   </div>
                 </div>
+              )}
+
+              {single && (
+                <section className="mt-5" aria-labelledby="booked-times">
+                  <h3 id="booked-times" className="text-xs uppercase tracking-[0.12em] text-[#9E7D53] mb-2">
+                    Booked times
+                  </h3>
+                  {singleDay?.status === 'booked' && (
+                    <p className="mb-2 text-xs text-[#B42318]">The whole day is marked Fully booked, so no time is offered to customers.</p>
+                  )}
+                  {timesByDay[single]?.length ? (
+                    <ul className="divide-y divide-[#F1ECE6] rounded-xl border border-[#E7DFD6]">
+                      {timesByDay[single].map((t) =>
+                        t.kind === 'appointment' ? (
+                          <li key={`a${t.item.leadId}`} className="flex items-start justify-between gap-3 px-3.5 py-2.5">
+                            <div className="min-w-0">
+                              <p className="text-sm font-medium tabular-nums">
+                                {timeLabel(t.start)}–{timeLabel(t.end)}
+                              </p>
+                              <p className="text-xs text-[#6A5F56] truncate">
+                                {t.item.fullName} · #{t.item.leadId} · {t.item.service}
+                              </p>
+                              {t.item.artist === 'senior' && <p className="text-[11px] text-[#A39689]">Senior artist: doesn't take Deepika's time</p>}
+                            </div>
+                            <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-semibold ${BOOKING_STATUS_STYLE[t.item.status] ?? STAGE_STYLE.lost}`}>
+                              {bookingStatusLabel(t.item.status)}
+                            </span>
+                          </li>
+                        ) : (
+                          <li key={`b${t.item.id}`} className="flex items-start justify-between gap-3 px-3.5 py-2.5">
+                            <div className="min-w-0">
+                              <p className="text-sm font-medium tabular-nums">
+                                {timeLabel(t.start)}–{timeLabel(t.end)} <span className="text-xs font-normal text-[#6A5F56]">· blocked</span>
+                              </p>
+                              {t.item.note && <p className="text-xs text-[#6A5F56] break-words">{t.item.note}</p>}
+                            </div>
+                            <button
+                              onClick={() => void removeBlock(t.item)}
+                              disabled={removing === t.item.id}
+                              aria-label={`Remove the block ${timeLabel(t.start)} to ${timeLabel(t.end)}`}
+                              title="Free this time again"
+                              className="shrink-0 w-8 h-8 rounded-full flex items-center justify-center text-[#6A5F56] hover:bg-[#F4EFEA] hover:text-[#B42318] disabled:opacity-40"
+                            >
+                              <Trash2 className="w-4 h-4" aria-hidden />
+                            </button>
+                          </li>
+                        ),
+                      )}
+                    </ul>
+                  ) : (
+                    <p className="text-sm text-[#A39689]">None yet: every time is free{singleDay?.status === 'booked' ? ' (but the day is fully booked)' : ''}.</p>
+                  )}
+
+                  <form onSubmit={addBlock} className="mt-3 rounded-xl bg-[#FAF7F2] p-3" aria-label="Block a time">
+                    <p className="text-xs font-medium text-[#5A4D42]">Block a time (e.g. a booking made by phone)</p>
+                    <div className="mt-2 grid grid-cols-2 gap-2">
+                      <label className="text-[11px] text-[#6A5F56]">
+                        From
+                        <input
+                          type="time"
+                          step={900}
+                          value={blockStart}
+                          onChange={(e) => {
+                            const start = e.target.value;
+                            setBlockStart(start);
+                            setBlockError('');
+                            // A sensible end: one booking's length later
+                            if (start && !blockEnd && appointmentHours) setBlockEnd(addHours(start, appointmentHours));
+                          }}
+                          className="mt-1 w-full rounded-lg border border-[#D9D0C5] bg-white px-2 py-1.5 text-sm tabular-nums outline-none focus:border-[#9E7D53] focus:ring-2 focus:ring-[#C5A880]/40"
+                        />
+                      </label>
+                      <label className="text-[11px] text-[#6A5F56]">
+                        To
+                        <input
+                          type="time"
+                          step={900}
+                          value={blockEnd}
+                          onChange={(e) => {
+                            setBlockEnd(e.target.value);
+                            setBlockError('');
+                          }}
+                          className="mt-1 w-full rounded-lg border border-[#D9D0C5] bg-white px-2 py-1.5 text-sm tabular-nums outline-none focus:border-[#9E7D53] focus:ring-2 focus:ring-[#C5A880]/40"
+                        />
+                      </label>
+                    </div>
+                    <label className="mt-2 block text-[11px] text-[#6A5F56]">
+                      Note (only the team sees it)
+                      <input
+                        type="text"
+                        maxLength={200}
+                        value={blockNote}
+                        onChange={(e) => setBlockNote(e.target.value)}
+                        placeholder="e.g. Anita's reception, booked by phone"
+                        className="mt-1 w-full rounded-lg border border-[#D9D0C5] bg-white px-2.5 py-1.5 text-sm outline-none focus:border-[#9E7D53] focus:ring-2 focus:ring-[#C5A880]/40"
+                      />
+                    </label>
+                    {blockError && (
+                      <p role="alert" className="mt-2 text-xs text-[#A1332A]">
+                        {blockError}
+                      </p>
+                    )}
+                    <button
+                      type="submit"
+                      disabled={blockSaving}
+                      className="mt-2.5 inline-flex items-center gap-1.5 rounded-full bg-[#1D1714] px-4 py-2 text-xs font-semibold uppercase tracking-[0.12em] text-white hover:bg-[#3A322C] disabled:opacity-40"
+                    >
+                      <Clock className="w-3.5 h-3.5" aria-hidden /> {blockSaving ? 'Saving…' : 'Block time'}
+                    </button>
+                  </form>
+                </section>
               )}
 
               {single && (

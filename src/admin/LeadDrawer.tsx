@@ -1,11 +1,13 @@
 /**
- * Side panel with everything about one lead: quick call / WhatsApp / email, details, the customer's own words,
- * and private team notes.
+ * Side panel with everything about one lead: quick call / WhatsApp / email, the WhatsApp booking (with the payment
+ * screenshots and Approve), details, the customer's own words, and private team notes.
  */
 import React, { useEffect, useRef, useState } from 'react';
 import { Mail, Phone, X } from 'lucide-react';
+import { timeLabel } from '../data/bookingFlow';
 import type { AdminUser, Lead } from '../data/leads';
 import { WhatsAppIcon } from '../components/WhatsAppIcon';
+import { BookingPanel } from './BookingPanel';
 import { AssigneeSelect, SourcePill, StageSelect } from './controls';
 import { channelLabel, eventDateLabel, fullDateTime, phoneDigits } from './format';
 
@@ -14,6 +16,9 @@ interface Props {
   users: AdminUser[];
   onClose: () => void;
   onUpdate: (changes: { stage?: string; assignedTo?: string | null; adminNotes?: string | null }) => Promise<unknown>;
+  /** A WhatsApp booking was approved or sent back from this panel: the updated lead. */
+  onBookingChanged: (lead: Lead) => void;
+  onLoggedOut: () => void;
 }
 
 const Row: React.FC<{ label: string; children: React.ReactNode }> = ({ label, children }) => (
@@ -23,7 +28,7 @@ const Row: React.FC<{ label: string; children: React.ReactNode }> = ({ label, ch
   </div>
 );
 
-export const LeadDrawer: React.FC<Props> = ({ lead, users, onClose, onUpdate }) => {
+export const LeadDrawer: React.FC<Props> = ({ lead, users, onClose, onUpdate, onBookingChanged, onLoggedOut }) => {
   const closeRef = useRef<HTMLButtonElement>(null);
   const [notes, setNotes] = useState(lead.adminNotes ?? '');
   const [notesState, setNotesState] = useState<'idle' | 'saving' | 'saved'>('idle');
@@ -106,11 +111,14 @@ export const LeadDrawer: React.FC<Props> = ({ lead, users, onClose, onUpdate }) 
             </div>
           </div>
 
+          {/* Bookings Pooja took on WhatsApp (website and ad leads have none) */}
+          {lead.channel === 'whatsapp' && <BookingPanel lead={lead} onChanged={onBookingChanged} onLoggedOut={onLoggedOut} />}
+
           <dl className="rounded-2xl border border-[#E7DFD6] bg-white px-4">
             <Row label="Phone">{lead.phone || '—'}</Row>
             <Row label="Email">{lead.email || <span className="text-[#C2853D]">No email</span>}</Row>
             <Row label="Service">{lead.service}</Row>
-            <Row label="Event date">{eventDateLabel(lead.eventDate) ?? '—'}</Row>
+            <Row label="Event date">{[eventDateLabel(lead.eventDate), timeLabel(lead.eventTime)].filter(Boolean).join(' at ') || '—'}</Row>
             <Row label="Location">{lead.eventLocation || '—'}</Row>
             <Row label="People">{lead.partySize || '—'}</Row>
             <Row label="Source">

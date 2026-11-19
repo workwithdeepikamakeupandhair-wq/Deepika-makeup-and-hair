@@ -367,6 +367,9 @@ export const TRAVEL_POLICY = [
   "Accommodation to be arranged by client (if required)",
 ];
 
+/** The advance that secures a date: this percentage of the total package amount (19 Nov 2026), non-refundable. */
+export const ADVANCE_PERCENT = 25;
+
 export const BOOKING_POLICY = [
   "Non-refundable advance required to secure your date",
   "Booking amount is non-transferable",

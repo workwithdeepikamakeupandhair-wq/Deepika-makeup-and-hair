@@ -13,7 +13,7 @@
 import crypto from 'node:crypto';
 import express, { Router, type Request } from 'express';
 import { inBackground } from '../background.js';
-import { receiveMessage, who, type InboundMessage, type MediaKind, type WhatsAppTransport } from '../whatsappBot.js';
+import { receiveMessage, registerOutboundTransport, who, type InboundMessage, type MediaKind, type WhatsAppTransport } from '../whatsappBot.js';
 
 const LOG = '[whatsapp:twilio]';
 
@@ -99,11 +99,13 @@ class TwilioError extends Error {
   }
 }
 
+const basicAuth = () => `Basic ${Buffer.from(`${config.accountSid}:${config.authToken}`).toString('base64')}`;
+
 async function twilioPost(url: string, form: Record<string, string>): Promise<unknown> {
   const res = await fetch(url, {
     method: 'POST',
     headers: {
-      Authorization: `Basic ${Buffer.from(`${config.accountSid}:${config.authToken}`).toString('base64')}`,
+      Authorization: basicAuth(),
       'Content-Type': 'application/x-www-form-urlencoded',
     },
     body: new URLSearchParams(form),
@@ -139,18 +141,17 @@ function transportFor(botNumber: string, statusCallback: string | undefined): Wh
   const key = `${botNumber} ${statusCallback ?? ''}`;
   let t = transports.get(key);
   if (t) return t;
+  const messagesUrl = `${config.apiUrl}/2010-04-01/Accounts/${config.accountSid}/Messages.json`;
+  const common = (to: string) => ({ From: `whatsapp:${botNumber}`, To: `whatsapp:+${to}`, ...(statusCallback ? { StatusCallback: statusCallback } : {}) });
   t = {
     name: botNumber === SANDBOX_NUMBER ? 'twilio sandbox' : 'twilio',
+    connection: { transport: 'twilio', businessNumber: botNumber },
     async send(to, body) {
       // Twilio has no quick-reply buttons without approved content templates, so replies are plain text
-      for (const part of splitForTwilio(body)) {
-        await twilioPost(`${config.apiUrl}/2010-04-01/Accounts/${config.accountSid}/Messages.json`, {
-          From: `whatsapp:${botNumber}`,
-          To: `whatsapp:+${to}`,
-          Body: part,
-          ...(statusCallback ? { StatusCallback: statusCallback } : {}),
-        });
-      }
+      for (const part of splitForTwilio(body)) await twilioPost(messagesUrl, { ...common(to), Body: part });
+    },
+    async sendImage(to, url, caption) {
+      await twilioPost(messagesUrl, { ...common(to), MediaUrl: url, ...(caption ? { Body: caption.slice(0, MAX_BODY) } : {}) });
     },
     markReadAndTyping(messageId) {
       if (!typingSupported) return;
@@ -166,6 +167,28 @@ function transportFor(botNumber: string, statusCallback: string | undefined): Wh
   };
   transports.set(key, t);
   return t;
+}
+
+/** Messages the dashboard sends later (the booking confirmation) go out from the business number the customer wrote to. */
+if (twilioWhatsAppEnabled) {
+  const statusCallback = config.webhookUrl ? `${config.webhookUrl.split('?')[0].replace(/\/?$/, '/')}status` : undefined;
+  registerOutboundTransport('twilio', (businessNumber) => {
+    const from = businessNumber || config.number;
+    if (!from) throw new Error('Which Twilio WhatsApp number to send from is unknown (set TWILIO_WHATSAPP_NUMBER).');
+    return transportFor(from, statusCallback);
+  });
+}
+
+/** Photos and files customers send (payment screenshots), downloaded with the account's credentials. */
+async function twilioMedia(url: string, declaredType: string | undefined): Promise<{ data: Buffer; contentType: string }> {
+  const host = new URL(url).hostname;
+  if (!host.endsWith('.twilio.com') && host !== new URL(config.apiUrl).hostname) throw new Error(`unexpected media address ${host}`);
+  const res = await fetch(url, { headers: { Authorization: basicAuth() }, signal: AbortSignal.timeout(20_000) });
+  if (!res.ok) throw new Error(`Twilio media download failed: ${res.status}`);
+  return {
+    data: Buffer.from(await res.arrayBuffer()),
+    contentType: res.headers.get('content-type')?.split(';')[0].trim() || declaredType || 'application/octet-stream',
+  };
 }
 
 // ---------- Incoming messages ----------
@@ -191,12 +214,14 @@ function toInbound(p: Form): InboundMessage | null {
   const kind = Number(p.NumMedia) > 0 ? mediaKind(p.MediaContentType0) : undefined;
   const text = p.Body?.trim() || p.ButtonText?.trim() || null;
   if (kind === 'sticker' && !text) return null;
+  const mediaUrl = p.MediaUrl0;
   return {
     id,
     from,
     profileName: p.ProfileName?.trim() || undefined,
     text,
     media: kind === 'sticker' ? undefined : kind,
+    fetchMedia: kind && kind !== 'sticker' && mediaUrl ? () => twilioMedia(mediaUrl, p.MediaContentType0) : undefined,
     referral: p.ReferralSourceType
       ? {
           source_type: p.ReferralSourceType.toLowerCase(),

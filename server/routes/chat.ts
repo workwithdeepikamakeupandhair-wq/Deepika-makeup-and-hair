@@ -66,7 +66,8 @@ chatRouter.post(
     // Questions about a date are answered from Deepika's availability calendar
     const calendar = Boolean(pool);
     const system = buildSystemPrompt(retrieved.context, todayInAtlanta(), calendar);
-    const tools: Record<string, ChatTool> = calendar ? { check_availability: checkAvailabilityTool('[chat] website visitor') } : {};
+    const visitorSaid = messages.filter((m) => m.role === 'user').map((m) => m.content).join('\n');
+    const tools: Record<string, ChatTool> = calendar ? { check_availability: checkAvailabilityTool('[chat] website visitor', undefined, visitorSaid) } : {};
 
     // The headers go out with the first piece of text, so a failure before any text can still answer in search mode
     let wroteAnything = false;

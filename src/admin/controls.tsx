@@ -3,8 +3,20 @@
  */
 import React from 'react';
 import { ChevronDown } from 'lucide-react';
+import { bookingStatusLabel } from '../data/bookingFlow';
 import { LEAD_STAGES, type AdminUser } from '../data/leads';
-import { SOURCE_STYLE, STAGE_STYLE, sourceLabel } from './format';
+import { BOOKING_STATUS_STYLE, SOURCE_STYLE, STAGE_STYLE, sourceLabel } from './format';
+
+/** Where a WhatsApp booking stands (waiting for the advance, payment to verify, confirmed). */
+export const BookingStatusPill: React.FC<{ status: string | null; className?: string }> = ({ status, className = '' }) => (
+  <span
+    className={`inline-flex items-center whitespace-nowrap rounded-full border px-2 py-0.5 text-[11px] font-semibold ${
+      (status && BOOKING_STATUS_STYLE[status]) || 'bg-[#F1EEEB] text-[#6A5F56] border-[#E2DCD6]'
+    } ${className}`}
+  >
+    {bookingStatusLabel(status)}
+  </span>
+);
 
 const stop = (e: React.SyntheticEvent) => e.stopPropagation();
 

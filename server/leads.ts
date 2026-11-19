@@ -7,7 +7,8 @@ import type { Lead } from '../src/data/leads.js';
 export const LEAD_COLUMNS = `
   b.id::text, b.full_name, b.phone, b.email, b.service, to_char(b.event_date, 'YYYY-MM-DD') AS event_date,
   b.event_location, b.party_size, b.notes, b.status, b.source, b.channel, b.campaign, b.ad_name,
-  b.assigned_to::text, u.name AS assigned_to_name, b.admin_notes, b.created_at, b.updated_at`;
+  b.assigned_to::text, u.name AS assigned_to_name, b.admin_notes, b.created_at, b.updated_at,
+  b.booking_status, to_char(b.event_time, 'HH24:MI') AS event_time`;
 
 export const LEAD_FROM = 'bookings b LEFT JOIN admin_users u ON u.id = b.assigned_to';
 
@@ -31,6 +32,8 @@ export interface LeadRow {
   admin_notes: string | null;
   created_at: Date;
   updated_at: Date;
+  booking_status: string | null;
+  event_time: string | null;
 }
 
 export function toLead(r: LeadRow): Lead {
@@ -54,6 +57,8 @@ export function toLead(r: LeadRow): Lead {
     adminNotes: r.admin_notes,
     createdAt: r.created_at.toISOString(),
     updatedAt: r.updated_at.toISOString(),
+    bookingStatus: r.booking_status,
+    eventTime: r.event_time,
   };
 }
 
