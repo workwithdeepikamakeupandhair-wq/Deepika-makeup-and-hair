@@ -41,6 +41,7 @@ import {
   bookingForPaymentProof,
   currentBooking,
   describeBooking,
+  hasBookingDetails,
   PACKAGE_GUIDE,
   PACKAGE_IDS,
   reopenPayment,
@@ -337,37 +338,61 @@ interface Turn {
 }
 
 /**
- * A chat that starts from a click-to-WhatsApp ad is a lead straight away, even before any booking details.
- * One open lead per customer: a repeat ad click within 30 days reuses it.
+ * Everyone who writes to Pooja is a lead in the dashboard (stage New) from their first message, before any booking
+ * details or payment. The booking details Pooja saves later fill in that same lead. One lead per customer: they get a
+ * new one only when they have none from the last 120 days that isn't lost (a lead marked lost who writes again is
+ * new again). Their whole chat shows in the lead's panel.
+ * A chat that starts from a click-to-WhatsApp ad is a lead from that ad, unless they have an open one from the last
+ * 30 days (a repeat click reuses it).
  */
-async function saveAdLead(waId: string, chat: ChatInfo, referral: Referral, source: string) {
+async function saveChatLead(waId: string, chat: ChatInfo, ad?: { referral: Referral; source: string }) {
   if (!pool) return;
   const phone = `+${waId}`;
-  const db = getDb();
-  const open = await db.query(
-    `SELECT 1 FROM bookings WHERE channel = 'whatsapp' AND phone = $1 AND created_at > now() - interval '30 days'
-        AND status NOT IN ('converted', 'lost')`,
-    [phone],
-  );
-  if (open.rowCount) return;
-  const headline = referral.headline?.trim().slice(0, 200) || null;
-  const { rows } = await db.query<{ id: string }>(
-    `INSERT INTO bookings (full_name, phone, service, notes, source, channel, campaign, ad_name, external_id)
-     VALUES ($1, $2, $3, $4, $5, 'whatsapp', $6, $7, $8)
-     ON CONFLICT (external_id) WHERE external_id IS NOT NULL DO NOTHING
-     RETURNING id`,
-    [
-      chat.profileName || 'WhatsApp lead',
-      phone,
-      SERVICE_NOT_SPECIFIED,
-      `Started a WhatsApp chat from an ad${headline ? `: "${headline}"` : ''}.${referral.body ? `\nAd text: ${referral.body.slice(0, 500)}` : ''}`,
-      source,
-      headline,
-      referral.source_id ? `Ad ${referral.source_id}` : null,
-      referral.ctwa_clid ? `ctwa:${referral.ctwa_clid}` : null,
-    ],
-  );
-  if (rows[0]) console.log(`${LOG} new ${source === 'instagram_ad' ? 'Instagram' : 'Facebook'} ad lead #${rows[0].id} from ${who(waId)}`);
+  const existing = ad
+    ? `SELECT 1 FROM bookings WHERE channel = 'whatsapp' AND phone = $1 AND created_at > now() - interval '30 days'
+          AND status NOT IN ('converted', 'lost')`
+    : `SELECT 1 FROM bookings WHERE channel = 'whatsapp' AND phone = $1 AND created_at > now() - interval '120 days'
+          AND status <> 'lost'`;
+  if ((await pool.query(existing, [phone])).rowCount) return; // the usual case: one quick look, no lock
+  const db = await pool.connect();
+  try {
+    await db.query('BEGIN');
+    // One at a time for this customer, so two quick messages (even on two server instances) make one lead
+    await db.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`whatsapp-lead:${phone}`]);
+    if ((await db.query(existing, [phone])).rowCount) return void (await db.query('COMMIT'));
+    const headline = ad?.referral.headline?.trim().slice(0, 200) || null;
+    const { rows } = ad
+      ? await db.query<{ id: string }>(
+          `INSERT INTO bookings (full_name, phone, service, notes, source, channel, campaign, ad_name, external_id)
+           VALUES ($1, $2, $3, $4, $5, 'whatsapp', $6, $7, $8)
+           ON CONFLICT (external_id) WHERE external_id IS NOT NULL DO NOTHING
+           RETURNING id`,
+          [
+            chat.profileName || 'WhatsApp lead',
+            phone,
+            SERVICE_NOT_SPECIFIED,
+            `Started a WhatsApp chat from an ad${headline ? `: "${headline}"` : ''}.${ad.referral.body ? `\nAd text: ${ad.referral.body.slice(0, 500)}` : ''}`,
+            ad.source,
+            headline,
+            ad.referral.source_id ? `Ad ${ad.referral.source_id}` : null,
+            ad.referral.ctwa_clid ? `ctwa:${ad.referral.ctwa_clid}` : null,
+          ],
+        )
+      : await db.query<{ id: string }>(
+          `INSERT INTO bookings (full_name, phone, service, source, channel) VALUES ($1, $2, $3, $4, 'whatsapp') RETURNING id`,
+          [chat.profileName || 'WhatsApp customer', phone, SERVICE_NOT_SPECIFIED, chat.adSource ?? 'whatsapp'],
+        );
+    await db.query('COMMIT');
+    if (rows[0]) {
+      const kind = ad ? `${ad.source === 'instagram_ad' ? 'Instagram' : 'Facebook'} ad lead` : 'lead';
+      console.log(`${LOG} new ${kind} #${rows[0].id} from ${who(waId)}`);
+    }
+  } catch (err) {
+    await db.query('ROLLBACK').catch(() => undefined);
+    throw err;
+  } finally {
+    db.release();
+  }
 }
 
 /**
@@ -615,6 +640,12 @@ const QUOTATION_MARK = '{{quotation}}';
 const QUOTATION_MARK_RE = /[ \t]*\{\{\s*quotation\s*\}\}[ \t]*/gi;
 /** "Here are our packages and pricing 👇" and the like: words that only make sense with a quotation under them. */
 const POINTS_AT_QUOTE = /here (are|is) (our|the|your)[^.!?\n]{0,60}(packages?|pricing|prices|quotation|brochure)|👇/i;
+/**
+ * Asks the customer to pay now or send the payment screenshot ("Your booking is ready for the advance payment…
+ * please send the payment screenshot"): only right with the payment message, which has the amount and where to pay.
+ */
+const ASKS_TO_PAY =
+  /(payment|advance|paid|pay)[^.!?\n]{0,80}screenshot|screenshot[^.!?\n]{0,40}(payment|advance)|ready for (the )?(advance|payment)|(make|complete|send) (the |your )?(advance|payment)\b/i;
 
 /**
  * The messages for one turn, in order: the model's reply split at its {{quotation}} mark with the fixed messages
@@ -667,7 +698,8 @@ async function answer(waId: string, chat: ChatInfo, messages: ChatMessage[], fir
     reachDeepika: REACH_DEEPIKA,
     firstReply,
     // An unfinished booking from the earlier conversation: Pooja asks whether to continue it or start a new one
-    returningWithBooking: returning && Boolean(booking) && booking!.status !== 'confirmed',
+    // (a lead with no event details yet, e.g. one who only said hello, isn't a booking to continue)
+    returningWithBooking: returning && Boolean(booking) && booking!.status !== 'confirmed' && hasBookingDetails(booking!),
     booking: describeBooking(booking, chat.quotedArtist, customerWords(messages)),
   });
   const script = scriptCheck(messages);
@@ -678,11 +710,17 @@ async function answer(waId: string, chat: ChatInfo, messages: ChatMessage[], fir
     const reply = await completeChatWithTools(prompt, toolsFor(waId, chat, messages, turn), {
       signal: AbortSignal.timeout(60_000),
       accept: script.accept,
-      // The reply points to a quotation ("Here are our packages 👇") that wasn't sent
-      revise: (r) =>
-        !turn.outbox.length && (new RegExp(QUOTATION_MARK_RE.source, 'i').test(r) || POINTS_AT_QUOTE.test(r))
-          ? `You put ${QUOTATION_MARK} in your reply but didn't call send_quotation, so nothing would be shown. Call send_quotation now for their occasion, then write your whole reply again.`
-          : null,
+      revise: (r) => {
+        // The reply points to a quotation ("Here are our packages 👇") that wasn't sent
+        if (!turn.outbox.length && (new RegExp(QUOTATION_MARK_RE.source, 'i').test(r) || POINTS_AT_QUOTE.test(r))) {
+          return `You put ${QUOTATION_MARK} in your reply but didn't call send_quotation, so nothing would be shown. Call send_quotation now for their occasion, then write your whole reply again.`;
+        }
+        // The reply asks them to pay or send the screenshot, but they never got the payment message (amount, where to pay)
+        if (!booking?.status && !turn.advanceRequested && ASKS_TO_PAY.test(r)) {
+          return "You asked the customer to pay or send the payment screenshot, but they haven't been sent the payment message, which has the amount and where to pay. If every detail is saved, call request_advance_payment now; if something is still missing, ask for it instead. Then write your whole reply again.";
+        }
+        return null;
+      },
       cacheKey: PROMPT_CACHE_KEY,
     });
     if (NO_REPLY_RE.test(reply)) {
@@ -999,11 +1037,10 @@ async function handleMessage(transport: WhatsAppTransport, m: InboundMessage) {
 
   // Blue ticks and "typing…" straight away, before anything else
   if (action !== 'context') transport.markReadAndTyping(m.id);
-  if (ad) {
-    await saveAdLead(waId, chat, ad, adSource!).catch((err) =>
-      console.error(`${LOG} could not save ad lead:`, err instanceof Error ? err.message : err),
-    );
-  }
+  // In the leads dashboard from the first message
+  await saveChatLead(waId, chat, ad ? { referral: ad, source: adSource! } : undefined).catch((err) =>
+    console.error(`${LOG} could not save the lead for ${who(waId)}:`, err instanceof Error ? err.message : err),
+  );
   if (action === 'context') return;
   if (action === 'handover') return handOver(waId, chat, transport);
   if (action === 'media_reply') {

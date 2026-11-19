@@ -222,9 +222,16 @@ function missingForAdvance(d: Pick<Draft, 'fullName' | 'eventDate' | 'eventTime'
   ].filter((x): x is string => Boolean(x));
 }
 
+/**
+ * Whether anything about the event has been saved. Every chat is a lead from its first message (and an ad click
+ * before that), so a booking row can exist with nothing in it yet.
+ */
+export const hasBookingDetails = (d: Draft) =>
+  Boolean(d.status || d.eventType || d.eventDate || d.eventTime || d.address || d.zip || d.items.length || d.specialRequirements || d.contactPhone);
+
 /** The booking, as the model sees it at the top of every reply (THIS CHAT in the prompt). */
 export function describeBooking(d: Draft | null, quotedArtist: Artist | undefined, customerSaid: string): string {
-  if (!d) return 'No booking details saved yet (save_booking_details saves them).';
+  if (!d || (!hasBookingDetails(d) && !nameTyped(d.fullName, customerSaid))) return 'No booking details saved yet (save_booking_details saves them).';
   const stage: Record<string, string> = {
     none: 'collecting details (no advance asked for yet)',
     awaiting_payment: `the payment message was sent; waiting for the customer to pay the advance and send the screenshot`,
@@ -289,8 +296,9 @@ export async function saveBookingDetails(
   if (!pool) return { ok: false, error: `Booking details can't be saved right now. Tell the customer ${B.artist} will reply personally.` };
   let draft = await currentBooking(waId);
   // A different, new event: a new booking (and lead), whatever happened to the earlier one. Asked again for a booking
-  // started in the last few hours (the one just made in this conversation), it carries on with that one instead.
-  const justStarted = draft && !draft.status && draft.createdAt.getTime() > Date.now() - 20 * 3_600_000;
+  // started in the last few hours (the one just made in this conversation), or for a lead with no event details yet
+  // (made from the first message), it carries on with that one instead.
+  const justStarted = draft && !draft.status && (draft.createdAt.getTime() > Date.now() - 20 * 3_600_000 || !hasBookingDetails(draft));
   if (args.start_new_booking === true && !justStarted) draft = null;
   if (draft?.status === 'confirmed') {
     return {

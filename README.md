@@ -135,7 +135,7 @@ advance and the calendar are worked out in code.
 3. **About Deepika:** a few words about her, once.
 4. **Brochure and quotation:** sent word for word (brochure pictures first, if any are listed in `BROCHURES`).
 5. **Details:** name, phone, event type, the complete address, the ZIP code and any special requirements, saved as
-   they come (the booking is a lead in the dashboard from the first detail).
+   they come, on the customer's lead (every chat is a lead in the dashboard from its first message).
 6. **Artist:** the ZIP code decides. In the Atlanta service area (Settings) Deepika does the makeup herself at her
    prices. Outside it, one of her senior artists does, at the senior artist's prices, and Pooja reassures the
    customer, sends the senior quotation and waits for their OK. Occasions with no senior price list (engagement, house
@@ -332,7 +332,7 @@ Cloud API. Requirements:
 | Instagram / Facebook **instant-form ads** | Meta Lead Ads webhook → `/api/meta/webhook` (answers, campaign and ad name fetched from Meta) | Instant form |
 | **Click-to-WhatsApp ads** | The first WhatsApp message carries the ad (headline, ad ID). The chat becomes a lead right away | WhatsApp chat |
 | **Website booking form** | `/api/bookings`. If the visitor arrived from an ad link, the ad platform and `utm_campaign` are recorded | Website form |
-| **WhatsApp assistant** bookings | Saved by the bot after the customer confirms. Updates the ad lead if the chat came from an ad | WhatsApp chat |
+| **WhatsApp chats** with Pooja | A lead (stage New) from the customer's first message, even if they only say hi or ask a price. The booking details she saves later fill in that lead, so it shows the service, date and payment as they come. One lead per customer: a new one only if they have none from the last 120 days that isn't lost (`saveChatLead` in `server/whatsappBot.ts`) | WhatsApp chat |
 
 The dashboard lets you:
 
