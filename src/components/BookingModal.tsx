@@ -102,13 +102,15 @@ export const BookingModal: React.FC<BookingModalProps> = ({
     );
   };
 
+  // WhatsApp opens a chat with Pooja, the AI assistant, who checks the date and takes the booking. With nothing chosen
+  // it's the same first message as the site's other WhatsApp buttons (she answers with her welcome).
   const look = lookFromService(service);
   const whatsappText = !preselected
-    ? `Hi ${firstName}, I'd like to book a consultation.`
+    ? 'Hi, I need makeup services.'
     : look
-      ? `Hi ${firstName}, I love the "${look}" look on your website and would like to book a consultation.`
-      : `Hi ${firstName}, I'd like to book a consultation for ${service}.`;
-  const whatsappHref = `${BUSINESS_INFO.whatsappUrl}?text=${encodeURIComponent(whatsappText)}`;
+      ? `Hi, I love the "${look}" look on your website and would like to book it.`
+      : `Hi, I'd like to book ${service}.`;
+  const whatsappHref = `${BUSINESS_INFO.assistantWhatsappUrl}?text=${encodeURIComponent(whatsappText)}`;
 
   // An email to Deepika with blank lines for the chosen service's questions, filled in inside the email itself
   const handleEmailSend = () => {
@@ -289,7 +291,7 @@ export const BookingModal: React.FC<BookingModalProps> = ({
                       <span className="flex-1 min-w-0">
                         <span className="block text-sm font-medium text-[#1D1714]">Connect via WhatsApp</span>
                         <span className="block text-[11px] text-[#6A5F56] leading-relaxed">
-                          Opens a chat with {firstName} straight away.
+                          Chat with Pooja, {firstName}'s assistant: she checks your date and books you straight away.
                         </span>
                       </span>
                       <ArrowUpRight className="w-4 h-4 text-[#9E7D53] shrink-0" />
