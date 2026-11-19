@@ -185,8 +185,12 @@ are in `payment_proofs`.
 
 **Each incoming message:**
 
-- **Text, and taps on buttons:** answered after a 1.5-second pause, so several quick messages ("hi", "price for
-  bridal?") get one reply. The customer sees blue ticks and "typing…" while it works. Through Meta, the first reply
+- **Text, and taps on buttons:** answered after a human-like wait of 30 seconds (a short message like "hi") up to 55
+  seconds (200+ characters), plus the few seconds Pooja takes to write, so about 30–60 seconds in all. The wait starts
+  again from the customer's latest message, so several quick messages ("hi", "price for bridal?") get one reply. The
+  customer sees blue ticks and "typing…" (shown again just before the reply). `WHATSAPP_REPLY_DELAY_SECONDS` changes it
+  (default `30-55`; one number for a fixed wait, `0` for no wait). The thanks for a payment screenshot waits the same
+  way. Through Meta, the first reply
   of a conversation carries three buttons: *Book appointment*, *Our services* and *Talk to Deepika*. Twilio needs
   approved content templates for buttons, so there the replies are plain text and customers just type.
 - **Talk to Deepika:** the button, or asking for her in words, hands the customer over.

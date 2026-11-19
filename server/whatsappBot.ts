@@ -71,8 +71,27 @@ const TAKEOVER_MS = (Number(process.env.WHATSAPP_HUMAN_TAKEOVER_HOURS) || 12) * 
 const DIRECT_WHATSAPP = WHATSAPP_CONTACTS.map((c) => `${c.url} (${c.country})`).join(' or ');
 const REACH_DEEPIKA = `message ${B.artist} on WhatsApp at ${DIRECT_WHATSAPP}, or call ${B.phonePrimary}`;
 
-/** Wait this long after a message for more ("hi" … "how much for bridal?") and answer them together. */
+/**
+ * Pooja answers like a person: about 30 seconds to a minute after the customer's last message, longer for a longer
+ * message (time to read it and type). Messages sent meanwhile restart the wait and are answered together.
+ * WHATSAPP_REPLY_DELAY_SECONDS="30-55" sets the wait (the reply itself then takes a few seconds more); "0" answers
+ * straight away, after the short pause that gathers quick follow-ups (used by the automated tests).
+ */
 const GATHER_MS = 1500;
+const REPLY_DELAY_SECONDS = (() => {
+  const m = (process.env.WHATSAPP_REPLY_DELAY_SECONDS ?? '30-55').trim().match(/^(\d+(?:\.\d+)?)(?:\s*-\s*(\d+(?:\.\d+)?))?$/);
+  const min = m ? Number(m[1]) : 30;
+  return { min, max: m?.[2] ? Math.max(min, Number(m[2])) : min };
+})();
+/** Messages this long or longer get the longest wait. */
+const LONG_MESSAGE_CHARS = 200;
+
+/** How long to wait before answering a message of this length (never less than the follow-up pause). */
+function replyDelayMs(text: string): number {
+  const { min, max } = REPLY_DELAY_SECONDS;
+  const seconds = min + (max - min) * Math.min(1, text.length / LONG_MESSAGE_CHARS);
+  return Math.max(GATHER_MS, Math.round(seconds * 1000));
+}
 /**
  * Longest a reply waits for the knowledge search. On a running server it takes well under 100 ms, but a freshly
  * started Vercel instance first has to download and load the search model, which takes seconds. The reply then goes
@@ -685,11 +704,12 @@ async function answer(waId: string, chat: ChatInfo, messages: ChatMessage[], fir
 }
 
 /**
- * Replies after a short wait, so messages sent in quick succession get one answer. A newer message to this server
- * instance restarts the wait; one that reaches another instance is caught in replyTo. Resolves once the reply is sent
+ * Replies after a human-like wait (replyDelayMs), so messages sent in quick succession get one answer. A newer message
+ * to this server instance restarts the wait; one that reaches another instance is caught in replyTo. Just before the
+ * reply is written, "typing…" shows again (WhatsApp hides it after about 25 seconds). Resolves once the reply is sent
  * (or the wait was taken over by a newer message).
  */
-function replyAfterWait(waId: string, latestId: number, transport: WhatsAppTransport): Promise<void> {
+function replyAfterWait(waId: string, latestId: number, transport: WhatsAppTransport, waitMs: number, messageId: string): Promise<void> {
   cancelWait(waId); // the earlier wait is replaced by this one
   const w: Waiting = {};
   waits.set(waId, w);
@@ -697,8 +717,9 @@ function replyAfterWait(waId: string, latestId: number, transport: WhatsAppTrans
     w.done = resolve;
     w.timer = setTimeout(() => {
       if (waits.get(waId) === w) waits.delete(waId);
-      replyTo(waId, latestId, transport).finally(resolve);
-    }, GATHER_MS);
+      if (waitMs > GATHER_MS) transport.markReadAndTyping(messageId);
+      replyTo(waId, latestId, transport, waitMs).finally(resolve);
+    }, waitMs);
   });
 }
 
@@ -735,7 +756,7 @@ async function sendAll(waId: string, transport: WhatsAppTransport, parts: Outgoi
  * Answers the customer's waiting messages, from the conversation stored so far. `latestId` is the newest message this
  * call was started for: if an even newer one is waiting, the call started for that one answers them all instead.
  */
-async function replyTo(waId: string, latestId: number, transport: WhatsAppTransport) {
+async function replyTo(waId: string, latestId: number, transport: WhatsAppTransport, waitedMs = GATHER_MS) {
   const started = Date.now();
   const token = await claimReplying(waId);
   if (!token) {
@@ -790,7 +811,7 @@ async function replyTo(waId: string, latestId: number, transport: WhatsAppTransp
     if (restart || (firstReply && welcomeIsTheWholeReply(question))) {
       await transport.send(waId, WELCOME_MESSAGE, true);
       await chats.addReply(waId, WELCOME_MESSAGE, answered);
-      console.log(`${LOG} welcomed ${who(waId)}${restart ? ' (asked for makeup services again: new conversation)' : returning ? ' (back after a break: new conversation)' : ''} via ${transport.name} ${seconds(Date.now() - started)} after the ${seconds(GATHER_MS)} wait`);
+      console.log(`${LOG} welcomed ${who(waId)}${restart ? ' (asked for makeup services again: new conversation)' : returning ? ' (back after a break: new conversation)' : ''} via ${transport.name} ${seconds(Date.now() - started)} after the ${seconds(waitedMs)} wait`);
       return;
     }
 
@@ -804,7 +825,7 @@ async function replyTo(waId: string, latestId: number, transport: WhatsAppTransp
     else await chats.settle(waId, answered);
     // Coexistence: Deepika takes over this chat. Own number: nobody else answers here, so the bot keeps helping.
     if (turn.handoff && SHARED_NUMBER) await pauseBot(waId);
-    const took = `${seconds(Date.now() - started)} after the ${seconds(GATHER_MS)} wait for follow-ups (search ${seconds(turn.searchMs)}, AI ${seconds(turn.aiMs)})`;
+    const took = `${seconds(Date.now() - started)} after the ${seconds(waitedMs)} wait (search ${seconds(turn.searchMs)}, AI ${seconds(turn.aiMs)})`;
     const fixed = turn.outbox.length ? `${turn.outbox.length} fixed message(s)` : '';
     const what = [fixed, reply && 'reply'].filter(Boolean).join(' + ');
     console.log(`${LOG} sent ${what || 'nothing more'} to ${who(waId)} via ${transport.name} ${took}${turn.advanceRequested ? ` (advance asked for booking #${turn.advanceRequested})` : ''}${turn.handoff ? ' and handed over to Deepika' : ''}`);
@@ -856,6 +877,13 @@ async function receivePaymentProof(waId: string, m: InboundMessage, bookingId: s
     reply = PROOF_FAILED_REPLY;
   }
   if (reply) {
+    // Thanked after the same human-like wait as any reply, with "typing…" again just before
+    const wait = replyDelayMs(caption ?? '');
+    if (wait > GATHER_MS) {
+      await sleep(wait);
+      transport.markReadAndTyping(m.id);
+      await sleep(1500);
+    }
     await transport.send(waId, reply, false);
     await chats.addReply(waId, reply, []);
   }
@@ -984,7 +1012,7 @@ async function handleMessage(transport: WhatsAppTransport, m: InboundMessage) {
     await chats.addReply(waId, media!.reply, []);
     return;
   }
-  await replyAfterWait(waId, id, transport);
+  await replyAfterWait(waId, id, transport, replyDelayMs(msgText ?? ''), m.id);
 }
 
 /** Deepika replied from the WhatsApp Business app (coexistence only): the bot steps back from that chat. */
