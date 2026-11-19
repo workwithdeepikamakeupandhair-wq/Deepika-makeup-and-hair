@@ -35,12 +35,14 @@ export interface ChatConnection {
 export interface WaitingMessage {
   id: number;
   content: string;
+  /** When it arrived (ms since 1970). */
+  at: number;
 }
 
 export interface Conversation {
   chat: ChatInfo;
-  /** The latest messages that are settled (answered, or kept only as context), oldest first. */
-  history: ChatMessage[];
+  /** The latest messages that are settled (answered, or kept only as context), oldest first, with when each was saved. */
+  history: (ChatMessage & { at: number })[];
   /** Customer messages still waiting for a reply, oldest first. */
   waiting: WaitingMessage[];
   /** Replies sent in this chat in the last 10 minutes. */
@@ -52,8 +54,8 @@ export interface ChatStore {
   touch(waId: string, update: { profileName?: string; adSource?: string; connection?: ChatConnection }): Promise<ChatInfo>;
   /** The chat's details, or null if this customer never wrote. */
   info(waId: string): Promise<ChatInfo | null>;
-  /** Notes whose prices the latest quotation showed. */
-  setQuotedArtist(waId: string, artist: Artist): Promise<void>;
+  /** Notes whose prices the latest quotation showed (null: none in this conversation yet). */
+  setQuotedArtist(waId: string, artist: Artist | null): Promise<void>;
   /**
    * Saves a customer message: `waiting` ones need a reply, the others are only context (e.g. while Deepika is
    * handling the chat). Returns the message's number, or null if this message ID was saved before (a redelivery).
@@ -161,12 +163,12 @@ function databaseStore(db: NonNullable<typeof pool>): ChatStore {
 
     async conversation(waId, limit) {
       const [messages, chat] = await Promise.all([
-        db.query<{ id: string; role: 'user' | 'assistant'; content: string; waiting: boolean }>(
-          `SELECT id, role, content, turn_at IS NULL AS waiting FROM (
-             (SELECT id, role, content, turn_at FROM whatsapp_messages
+        db.query<{ id: string; role: 'user' | 'assistant'; content: string; waiting: boolean; created_at: Date }>(
+          `SELECT id, role, content, turn_at IS NULL AS waiting, created_at FROM (
+             (SELECT id, role, content, turn_at, created_at FROM whatsapp_messages
                WHERE wa_id = $1 AND turn_at IS NOT NULL ORDER BY turn_at DESC, id DESC LIMIT $2)
              UNION ALL
-             (SELECT id, role, content, turn_at FROM whatsapp_messages
+             (SELECT id, role, content, turn_at, created_at FROM whatsapp_messages
                WHERE wa_id = $1 AND turn_at IS NULL ORDER BY id DESC LIMIT 20)
            ) m
            ORDER BY turn_at ASC NULLS LAST, id ASC`,
@@ -182,8 +184,8 @@ function databaseStore(db: NonNullable<typeof pool>): ChatStore {
       ]);
       return {
         chat: chatInfo(chat.rows[0]),
-        history: messages.rows.filter((m) => !m.waiting).map(({ role, content }) => ({ role, content })),
-        waiting: messages.rows.filter((m) => m.waiting).map(({ id, content }) => ({ id: Number(id), content })),
+        history: messages.rows.filter((m) => !m.waiting).map(({ role, content, created_at }) => ({ role, content, at: created_at.getTime() })),
+        waiting: messages.rows.filter((m) => m.waiting).map(({ id, content, created_at }) => ({ id: Number(id), content, at: created_at.getTime() })),
         recentReplies: chat.rows[0]?.recent_replies ?? 0,
       };
     },
@@ -304,7 +306,7 @@ function memoryStore(): ChatStore {
       return c ? { ...c.info } : null;
     },
     async setQuotedArtist(waId, artist) {
-      chatFor(waId).info.quotedArtist = artist;
+      chatFor(waId).info.quotedArtist = artist ?? undefined;
     },
     async addCustomerMessage(waId, content, { messageId, waiting }) {
       const c = chatFor(waId);
@@ -328,8 +330,8 @@ function memoryStore(): ChatStore {
       const now = Date.now();
       return {
         chat: { ...c.info },
-        history: settled.slice(-limit).map(({ role, content }) => ({ role, content })),
-        waiting: c.messages.filter((m) => m.turn === null).slice(-20).map(({ id, content }) => ({ id, content })),
+        history: settled.slice(-limit).map(({ role, content, at }) => ({ role, content, at })),
+        waiting: c.messages.filter((m) => m.turn === null).slice(-20).map(({ id, content, at }) => ({ id, content, at })),
         recentReplies: c.messages.filter((m) => m.role === 'assistant' && now - m.at < 10 * 60_000).length,
       };
     },

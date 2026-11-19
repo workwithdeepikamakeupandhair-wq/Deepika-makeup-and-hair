@@ -100,13 +100,14 @@ export interface Draft {
   status: BookingStatus | null;
   specialRequirements: string | null;
   paymentRequestedAt: Date | null;
+  createdAt: Date;
 }
 
 /** The booking's columns; `t` is the table alias with its dot, e.g. "b.". */
 const draftColumns = (t = '') => `${t}id::text AS id, ${t}full_name, ${t}contact_phone, ${t}event_type,
   to_char(${t}event_date, 'YYYY-MM-DD') AS event_date, to_char(${t}event_time, 'HH24:MI') AS event_time, ${t}event_location,
   ${t}event_zip, ${t}artist, ${t}quote_items, ${t}total_price::float8 AS total_price, ${t}advance_amount::float8 AS advance_amount,
-  ${t}booking_status, ${t}special_requirements, ${t}payment_requested_at`;
+  ${t}booking_status, ${t}special_requirements, ${t}payment_requested_at, ${t}created_at`;
 
 interface DraftRow {
   id: string;
@@ -124,6 +125,7 @@ interface DraftRow {
   booking_status: BookingStatus | null;
   special_requirements: string | null;
   payment_requested_at: Date | null;
+  created_at: Date;
 }
 
 const toDraft = (r: DraftRow): Draft => ({
@@ -142,6 +144,7 @@ const toDraft = (r: DraftRow): Draft => ({
   status: r.booking_status,
   specialRequirements: r.special_requirements,
   paymentRequestedAt: r.payment_requested_at,
+  createdAt: r.created_at,
 });
 
 /**
@@ -248,14 +251,15 @@ export async function saveBookingDetails(
 ) {
   if (!pool) return { ok: false, error: `Booking details can't be saved right now. Tell the customer ${B.artist} will reply personally.` };
   let draft = await currentBooking(waId);
+  // A different, new event: a new booking (and lead), whatever happened to the earlier one. Asked again for a booking
+  // started in the last few hours (the one just made in this conversation), it carries on with that one instead.
+  const justStarted = draft && !draft.status && draft.createdAt.getTime() > Date.now() - 20 * 3_600_000;
+  if (args.start_new_booking === true && !justStarted) draft = null;
   if (draft?.status === 'confirmed') {
-    if (args.start_new_booking !== true) {
-      return {
-        ok: false,
-        error: `Booking #${draft.id} is already confirmed. Changes to it go through ${B.artist}'s team: call handoff_to_deepika with what they'd like to change. If these details are for a different, new event, call save_booking_details again with start_new_booking true.`,
-      };
-    }
-    draft = null;
+    return {
+      ok: false,
+      error: `Booking #${draft.id} is already confirmed. Changes to it go through ${B.artist}'s team: call handoff_to_deepika with what they'd like to change. If these details are for a different, new event, call save_booking_details again with start_new_booking true.`,
+    };
   }
   if (draft?.status === 'payment_review') {
     return {

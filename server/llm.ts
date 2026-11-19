@@ -90,8 +90,10 @@ export interface WhatsAppPromptOptions {
   sharedNumber: boolean;
   /** How to reach Deepika herself, e.g. "message Deepika on WhatsApp at https://wa.me/… (USA) …, or call …". */
   reachDeepika: string;
-  /** This reply is the first one in the chat: Pooja introduces herself. */
+  /** This reply is the first one in the conversation: Pooja introduces herself. */
   firstReply: boolean;
+  /** The customer is back after a long break (a new conversation) and has an unfinished booking from before. */
+  returningWithBooking?: boolean;
   /** The customer's booking so far (describeBooking in whatsappBooking.ts). */
   booking: string;
 }
@@ -216,9 +218,12 @@ ${o.facts}`;
   const intro = o.firstReply
     ? `\nThis is the first message you send in this chat: start by introducing yourself in a few words as Pooja, ${first}'s personal assistant (e.g. "Hi there! 😊 I'm Pooja, ${first}'s personal assistant."), then respond to what they said.\n`
     : '';
+  const returning = o.returningWithBooking
+    ? `\nThis customer is back after a break: this is a new conversation, and the booking under BOOKING SO FAR is from their earlier one, not finished. If you haven't asked yet in this conversation, ask kindly whether they'd like to continue with it (mention its occasion or date) or need something new, before going on. Continuing: carry on from what's saved. Something new: start fresh from the date and time, and call save_booking_details with start_new_booking true the first time (it becomes a new booking).\n`
+    : '';
   const thisChat = `THIS CHAT:
 Today is ${o.todayLong} (${o.todayIso}, Atlanta time).${o.profileName ? ` The customer's WhatsApp profile name is "${o.profileName}". It may be a nickname: for the booking, use the full name they type in the chat, and ask for it if they haven't.` : ''}
-${intro}
+${intro}${returning}
 BOOKING SO FAR:
 ${o.booking}
 

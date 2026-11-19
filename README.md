@@ -204,6 +204,10 @@ are in `payment_proofs`.
 **Conversations are saved in the database** (`server/whatsappChats.ts`; tables `whatsapp_messages` and `whatsapp_chats`
 from `npm run db:setup`). Every reply is written from the stored chat (the last 40 messages), so the bot remembers it
 across restarts and across Vercel instances: it doesn't welcome the customer twice or ask again for details they gave.
+**After 20 hours without messages, the next message starts a new conversation** (`NEW_CONVERSATION_AFTER_MS`): the
+customer is welcomed again and Pooja sees only the new messages. An unfinished booking from before is still known: she
+asks whether to continue it or book something new, and something new becomes a new booking (and lead). Older messages
+stay saved and appear in the lead's chat in the dashboard.
 The database also makes sure only one reply is written per chat at a time, and that a message redelivered to another
 instance is answered once. Without `DATABASE_URL`, conversations are kept in memory and a restart forgets them. With
 `gpt-5.4-mini`, WhatsApp and website chat replies run with `reasoning_effort: none`, because OpenAI's Chat Completions API

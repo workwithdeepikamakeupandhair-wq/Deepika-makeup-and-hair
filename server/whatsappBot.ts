@@ -80,6 +80,11 @@ const PROMPT_CACHE_KEY = 'dmh-whatsapp-assistant';
 const MAX_MESSAGE_AGE_MS = 10 * 60_000;
 /** Earlier messages the model sees: plenty for a whole booking conversation. */
 const MAX_HISTORY = 40;
+/**
+ * A customer who writes again after this long without messages starts a new conversation: Pooja welcomes them again
+ * and sees only the new messages (plus any saved booking, which she asks about). Everything stays saved.
+ */
+const NEW_CONVERSATION_AFTER_MS = 20 * 3_600_000;
 /** Longest customer message kept, and longest question (messages sent together) the model answers. */
 const MAX_MESSAGE_CHARS = 1500;
 const MAX_QUESTION_CHARS = 2000;
@@ -462,7 +467,10 @@ function toolsFor(waId: string, chat: ChatInfo, messages: ChatMessage[], turn: T
                 },
               },
               special_requirements: { type: 'string', description: 'Anything special they asked for (look, outfit, skin, extra hairstyles…); or "".' },
-              start_new_booking: { type: 'boolean', description: 'true only when their earlier booking is already confirmed and these details are for a different, new event.' },
+              start_new_booking: {
+                type: 'boolean',
+                description: 'true only for the first save of a different, new event than the booking under BOOKING SO FAR (e.g. it is already confirmed, or a returning customer wants something new). Otherwise false.',
+              },
             },
           },
         },
@@ -597,11 +605,12 @@ function inOrder(reply: string, fixed: Outgoing[]): Outgoing[] {
 }
 
 /**
- * Writes the reply to `messages`: the stored conversation, ending with the customer's latest message(s). `firstReply`:
- * nothing has been sent in this chat yet, so Pooja introduces herself. The reply is empty when the fixed messages in
- * `turn.outbox` (sent before it) say everything.
+ * Writes the reply to `messages`: the current conversation, ending with the customer's latest message(s). `firstReply`:
+ * nothing has been sent in this conversation yet, so Pooja introduces herself. `returning`: the customer chatted
+ * before, more than NEW_CONVERSATION_AFTER_MS ago. The reply is empty when the fixed messages in `turn.outbox` (sent
+ * before it) say everything.
  */
-async function answer(waId: string, chat: ChatInfo, messages: ChatMessage[], firstReply: boolean): Promise<{ reply: string; turn: Turn }> {
+async function answer(waId: string, chat: ChatInfo, messages: ChatMessage[], firstReply: boolean, returning = false): Promise<{ reply: string; turn: Turn }> {
   const turn: Turn = { handoff: false, outbox: [] };
   const searchStarted = Date.now();
   const search = retrieve(messages).catch((err) => {
@@ -631,6 +640,8 @@ async function answer(waId: string, chat: ChatInfo, messages: ChatMessage[], fir
     sharedNumber: SHARED_NUMBER,
     reachDeepika: REACH_DEEPIKA,
     firstReply,
+    // An unfinished booking from the earlier conversation: Pooja asks whether to continue it or start a new one
+    returningWithBooking: returning && Boolean(booking) && booking!.status !== 'confirmed',
     booking: describeBooking(booking, chat.quotedArtist, customerWords(messages)),
   });
   const script = scriptCheck(messages);
@@ -737,18 +748,36 @@ async function replyTo(waId: string, latestId: number, transport: WhatsAppTransp
     }
 
     const question = waiting.map((m) => m.content).join('\n').slice(0, MAX_QUESTION_CHARS);
-    const messages: ChatMessage[] = [...history, { role: 'user', content: question }];
+    // The current conversation: what came after the last silence of NEW_CONVERSATION_AFTER_MS or more. A customer who
+    // writes again after that starts afresh (welcome, no old dates or answers); the older messages stay saved.
+    const times = [...history.map((m) => m.at), waiting[0].at];
+    let since = 0;
+    for (let i = times.length - 1; i > 0; i--) {
+      if (times[i] - times[i - 1] >= NEW_CONVERSATION_AFTER_MS) {
+        since = i;
+        break;
+      }
+    }
+    const current = history.slice(since);
+    const returning = since > 0;
+    const messages: ChatMessage[] = [...current.map(({ role, content }) => ({ role, content })), { role: 'user', content: question }];
+
+    const firstReply = !current.some((m) => m.role === 'assistant');
+    // A new conversation: prices shown in an earlier one don't count (they're shown again for this booking)
+    if (returning && firstReply && chat.quotedArtist) {
+      await chats.setQuotedArtist(waId, null);
+      chat.quotedArtist = undefined;
+    }
 
     // Pooja's welcome is the whole first reply to a hello or "I need makeup services" (with the buttons on Meta)
-    const firstReply = !history.some((m) => m.role === 'assistant');
     if (firstReply && welcomeIsTheWholeReply(question)) {
       await transport.send(waId, WELCOME_MESSAGE, true);
       await chats.addReply(waId, WELCOME_MESSAGE, answered);
-      console.log(`${LOG} welcomed ${who(waId)} via ${transport.name} ${seconds(Date.now() - started)} after the ${seconds(GATHER_MS)} wait`);
+      console.log(`${LOG} welcomed ${who(waId)}${returning ? ' (back after a break: new conversation)' : ''} via ${transport.name} ${seconds(Date.now() - started)} after the ${seconds(GATHER_MS)} wait`);
       return;
     }
 
-    const { reply, turn } = await answer(waId, chat, messages, firstReply);
+    const { reply, turn } = await answer(waId, chat, messages, firstReply, returning);
     // Coexistence: Deepika may have replied from her phone while the answer was being written
     if (SHARED_NUMBER && Date.now() < (await chats.pausedUntil(waId))) return;
     // Brochures, quotations and the payment message word for word, where the reply puts them (or first)
