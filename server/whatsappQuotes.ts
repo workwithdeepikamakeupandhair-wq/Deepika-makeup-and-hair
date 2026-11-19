@@ -45,8 +45,8 @@ const priceLine = (s: ServiceItem | OccasionPrice) => `• ${s.title}: ${formatP
 const ticks = (items: string[]) => items.map((i) => `✔ ${i}`).join('\n');
 /** From the price lists: travel charges, and the advance that confirms the date. */
 const POLICY = `${TRAVEL_POLICY[0]}.\nA ${ADVANCE_PERCENT}% advance payment (non-refundable) blocks your slot and confirms your date.`;
-/** Under Deepika's own prices: they're for the Atlanta area, where she does the makeup herself. */
-const DEEPIKA_CLOSING = `These prices are with ${ARTIST} herself, for events in the Atlanta area. Outside Atlanta, one of ${ARTIST}'s senior artists takes care of you, and the price can differ.\n${POLICY}`;
+/** Under Deepika's own prices (sent only for events in the Atlanta area, where she does the makeup herself). */
+const DEEPIKA_CLOSING = `These prices are with ${ARTIST} herself, for events in the Atlanta area.\n${POLICY}`;
 const SENIOR_CLOSING = `These are our senior artists' prices. They're personally trained by ${ARTIST} and follow her techniques and standards.\n${POLICY}`;
 
 const bridal = (artist?: 'senior') =>

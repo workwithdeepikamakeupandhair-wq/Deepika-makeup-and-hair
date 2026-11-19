@@ -390,7 +390,7 @@ function toolsFor(waId: string, chat: ChatInfo, messages: ChatMessage[], turn: T
         type: 'function',
         function: {
           name: 'send_quotation',
-          description: `Send the customer the brochure and quotation for their occasion, with the prices of the artist who'll do their makeup (${B.artist.split(' ')[0]} herself unless their saved ZIP code is outside the Atlanta area). It goes to them word for word, as its own message(s) just before your reply. Occasions: ${Object.entries(QUOTE_OCCASIONS)
+          description: `Send the customer the brochure and quotation for their occasion, with the prices of the artist who'll do their makeup: ${B.artist.split(' ')[0]} herself when the event's saved ZIP code is in the Atlanta area, a senior artist otherwise. Works only once the event address and ZIP code are saved (save_booking_details). It goes to them word for word, as its own message(s). Occasions: ${Object.entries(QUOTE_OCCASIONS)
             .map(([occasion, meaning]) => `${occasion} = ${meaning}`)
             .join('; ')}.`,
           strict: true,
@@ -405,8 +405,15 @@ function toolsFor(waId: string, chat: ChatInfo, messages: ChatMessage[], turn: T
       run: async (args) => {
         const occasion = text(args.occasion, 40);
         if (!Object.hasOwn(QUOTATIONS, occasion)) return { ok: false, error: `occasion must be one of: ${Object.keys(QUOTE_OCCASIONS).join(', ')}` };
+        // The prices depend on who does the makeup, which the event's ZIP code decides: no quotation before it
         const booking = await currentBooking(waId);
-        const artist = (booking?.status !== 'confirmed' && booking?.artist) || 'deepika';
+        const artist = booking?.status !== 'confirmed' ? booking?.artist : null;
+        if (!artist) {
+          return {
+            ok: false,
+            error: `The prices depend on where the event is (${B.artist.split(' ')[0]} herself in the Atlanta area, a senior artist outside it), and the event address isn't saved yet. Ask warmly for the complete address of the event with its ZIP code, save it with save_booking_details, then call send_quotation. Don't type out any prices meanwhile.`,
+          };
+        }
         const quote = QUOTATIONS[occasion as QuoteOccasion][artist];
         if (!quote) {
           return {

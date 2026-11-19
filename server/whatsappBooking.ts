@@ -387,9 +387,9 @@ export async function saveBookingDetails(
           price_not_available: `There's no senior artist price for: ${quote.unavailable.join(', ')}. Don't guess a price: tell the customer ${B.artist.split(' ')[0]}'s team will confirm the quote for their location, and call handoff_to_deepika.`,
         }
       : {}),
-    ...(artist && chat.quotedArtist !== artist && occasions.length && !quote.unavailable.length
+    ...(artist && chat.quotedArtist !== artist && !quote.unavailable.length
       ? {
-          quotation_needed: `The customer hasn't seen ${artist === 'deepika' ? "Deepika's" : "the senior artist's"} prices yet: call send_quotation (${occasions.join(', ')}) and ask whether they're happy with the price before asking for the advance.`,
+          quotation_needed: `The customer hasn't seen ${artist === 'deepika' ? "Deepika's" : "the senior artists'"} prices yet: call send_quotation (${occasions.length ? occasions.join(', ') : `their occasion${next.eventType ? `: ${next.eventType}` : ''}`}) and ask which package they like and whether they're happy with the price before asking for the advance.`,
         }
       : {}),
     ...(changedAfterPaymentRequest ? { note: 'The payment message they got earlier no longer matches: once they agree, call request_advance_payment again.' } : {}),
