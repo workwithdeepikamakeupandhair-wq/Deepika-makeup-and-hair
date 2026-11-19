@@ -292,7 +292,9 @@ const SAYS_WHEN =
  */
 export function checkAvailabilityTool(log: string, customerPhone?: string, customerSaid?: string): ChatTool {
   const text = (value: unknown, max: number) => (typeof value === 'string' ? value.trim().slice(0, max) : '');
-  const said = customerSaid === undefined ? null : plain(customerSaid);
+  /** Words, with "19th" counted as "19". */
+  const wordsOf = (s: string) => plain(s).split(' ').filter(Boolean).map((w) => w.replace(/^(\d+)(st|nd|rd|th)$/, '$1'));
+  const said = customerSaid === undefined ? null : new Set(wordsOf(customerSaid));
   return {
     definition: {
       type: 'function',
@@ -307,7 +309,7 @@ export function checkAvailabilityTool(log: string, customerPhone?: string, custo
           properties: {
             customer_words: {
               type: 'string',
-              description: 'The words the customer used for this date, copied exactly from one of their messages, e.g. "March 12" or "next Saturday". Only check dates the customer gave.',
+              description: 'The words the customer used for this date (and time), taken from their messages, e.g. "March 12" or "next Saturday 8 am". Only check dates the customer gave.',
             },
             start_date: { type: 'string', description: 'First date to check, as YYYY-MM-DD.' },
             end_date: { type: 'string', description: 'Last date to check, as YYYY-MM-DD. The same as start_date to check a single day.' },
@@ -322,12 +324,13 @@ export function checkAvailabilityTool(log: string, customerPhone?: string, custo
     },
     run: async (args) => {
       const [start, end, time] = [text(args.start_date, 10), text(args.end_date, 10), text(args.time, 8)];
-      const words = plain(text(args.customer_words, 200));
-      if (said !== null && (!words || !SAYS_WHEN.test(words) || !said.includes(words))) {
+      // Every word quoted must come from the customer (from any of their messages), and together say when
+      const quoted = wordsOf(text(args.customer_words, 200));
+      if (said !== null && (!quoted.length || !SAYS_WHEN.test(quoted.join(' ')) || quoted.some((w) => !said.has(w)))) {
         console.log(`${log}: calendar check refused (the customer didn't give that date)`);
         return {
           ok: false,
-          error: `customer_words must be copied exactly from the customer's own messages. If they haven't told you a date, don't check one (not even today's): ask them for their event date and time.`,
+          error: `customer_words must use only the customer's own words for the date (from any of their messages, e.g. "19 march 2027" and "10 am"). If they did give the date, call again with their words. If they haven't told you a date, don't check one (not even today's): ask them for it.`,
         };
       }
       console.log(`${log}: checked the calendar for ${start}${end !== start ? ` to ${end}` : ''}${time ? ` at ${time}` : ''}`);

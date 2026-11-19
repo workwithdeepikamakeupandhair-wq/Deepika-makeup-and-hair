@@ -173,6 +173,43 @@ const NO_NAME = 'WhatsApp customer';
  */
 const nameTyped = (name: string, customerSaid: string) => name !== NO_NAME && plain(customerSaid).includes(plain(name));
 
+/**
+ * Quotations with a choice of packages, and the word a customer uses for each ("I'll take the airbrush one").
+ * Used to check that the saved package is the one the customer last named themselves.
+ */
+const CHOICES: Record<string, { group: string; word: string; re: RegExp }> = {
+  hd_bridal: { group: 'bridal', word: 'HD', re: /\bhd\b/g },
+  advanced_bridal: { group: 'bridal', word: 'Advanced', re: /\badvanced\b/g },
+  airbrush_bridal: { group: 'bridal', word: 'Airbrush', re: /\bair ?brush\b/g },
+  party_basic: { group: 'party', word: 'Basic', re: /\bbasic\b/g },
+  party_hd: { group: 'party', word: 'HD', re: /\bhd\b/g },
+  party_advanced: { group: 'party', word: 'Advanced', re: /\badvanced\b/g },
+};
+
+/**
+ * For each saved package that came from a choice (bridal: HD / Advanced / Airbrush; party: Basic / HD / Advanced),
+ * the package the customer named last must be that one. Returns what's wrong, or null.
+ */
+export function packageChoiceProblem(items: QuoteItem[], customerSaid: string): string | null {
+  const said = plain(customerSaid);
+  for (const item of items) {
+    const choice = CHOICES[item.package];
+    if (!choice) continue;
+    const options = Object.entries(CHOICES).filter(([, c]) => c.group === choice.group);
+    let latest: { id: string; at: number } | null = null;
+    for (const [id, c] of options) {
+      for (const m of said.matchAll(new RegExp(c.re.source, 'g'))) if (!latest || m.index! > latest.at) latest = { id, at: m.index! };
+    }
+    const names = options.map(([, c]) => c.word).join(', ');
+    if (!latest) return `The customer hasn't chosen their ${choice.group} package in their own words yet (${names}): ask which one they'd like, save it with save_booking_details, then try again.`;
+    // The same word in two groups (HD, Advanced) is fine: it names this item's package if the words match
+    if (CHOICES[latest.id].word !== choice.word) {
+      return `The saved package is ${item.title}, but the customer last chose ${CHOICES[latest.id].word}. Save the package they chose with save_booking_details (items), check with them if unsure, then try again.`;
+    }
+  }
+  return null;
+}
+
 /** What still has to be known before the advance can be asked for. */
 function missingForAdvance(d: Pick<Draft, 'fullName' | 'eventDate' | 'eventTime' | 'address' | 'zip' | 'items'>, nameKnown: boolean): string[] {
   return [
@@ -393,7 +430,7 @@ export async function saveBookingDetails(
       : {}),
     ...(artist && chat.quotedArtist !== artist && !quote.unavailable.length
       ? {
-          quotation_needed: `The customer hasn't seen ${artist === 'deepika' ? "Deepika's" : "the senior artists'"} prices yet: call send_quotation (${occasions.length ? occasions.join(', ') : `their occasion${next.eventType ? `: ${next.eventType}` : ''}`}) and ask which package they like and whether they're happy with the price before asking for the advance.`,
+          quotation_needed: `The customer hasn't seen ${artist === 'deepika' ? "Deepika's" : "the senior artists'"} prices yet: call send_quotation (${occasions.length ? occasions.join(', ') : `their occasion${next.eventType ? `: ${next.eventType}` : ''}`}) now, in this reply (don't ask whether they'd like to see them), then ask which package they like. Ask for the advance only once they're happy with the price.`,
         }
       : {}),
     ...(changedAfterPaymentRequest ? { note: 'The payment message they got earlier no longer matches: once they agree, call request_advance_payment again.' } : {}),
@@ -424,6 +461,12 @@ export async function requestAdvancePayment(
   const stillPriced = price(d.items.filter((i) => isPackage(i.package)).map((i) => ({ package: i.package as PackageId, quantity: i.quantity })), d.artist);
   if (stillPriced.unavailable.length || stillPriced.total !== d.total) {
     return { ok: false, error: 'The prices changed: call save_booking_details again (with the same items) to refresh them, show the customer, and ask again.' };
+  }
+  // The payment message charges what's saved: it must be the package the customer chose
+  const choiceProblem = packageChoiceProblem(d.items, customerSaid);
+  if (choiceProblem) {
+    console.log(`[whatsapp] booking #${d.id}: advance refused (package not the customer's latest choice)`);
+    return { ok: false, error: choiceProblem };
   }
   if (chat.quotedArtist !== d.artist) {
     const occasions = [...new Set(d.items.map((i) => (isPackage(i.package) ? PACKAGES[i.package].occasion : null)).filter(Boolean))];

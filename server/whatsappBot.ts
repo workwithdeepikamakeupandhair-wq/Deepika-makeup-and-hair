@@ -455,7 +455,7 @@ function toolsFor(waId: string, chat: ChatInfo, messages: ChatMessage[], turn: T
               zip_code: { type: 'string', description: 'The ZIP code of that address (copy it here even when it is part of the address); or "".' },
               items: {
                 type: 'array',
-                description: `What they're booking and for how many people (an empty list keeps what's saved). Packages: ${PACKAGE_GUIDE}.`,
+                description: `The packages the customer has chosen themselves, and for how many people. Never guess a package: leave the list empty until they pick one (an empty list keeps what's saved). When they change their choice, save the new list. Packages: ${PACKAGE_GUIDE}.`,
                 items: {
                   type: 'object',
                   additionalProperties: false,
@@ -748,8 +748,9 @@ async function replyTo(waId: string, latestId: number, transport: WhatsAppTransp
     }
 
     const question = waiting.map((m) => m.content).join('\n').slice(0, MAX_QUESTION_CHARS);
-    // The current conversation: what came after the last silence of NEW_CONVERSATION_AFTER_MS or more. A customer who
-    // writes again after that starts afresh (welcome, no old dates or answers); the older messages stay saved.
+    // The current conversation starts after the last silence of NEW_CONVERSATION_AFTER_MS or more, or at the customer's
+    // last "Hi, I need makeup services." (answered with the welcome), whichever is later. It starts afresh: welcome,
+    // no old dates or answers. The older messages stay saved.
     const times = [...history.map((m) => m.at), waiting[0].at];
     let since = 0;
     for (let i = times.length - 1; i > 0; i--) {
@@ -758,22 +759,31 @@ async function replyTo(waId: string, latestId: number, transport: WhatsAppTransp
         break;
       }
     }
+    let lastWelcome = -1;
+    for (let i = history.length - 1; i >= 0 && lastWelcome < 0; i--) if (history[i].role === 'assistant' && history[i].content === WELCOME_MESSAGE) lastWelcome = i;
+    if (lastWelcome > 0) {
+      let start = lastWelcome;
+      while (start > 0 && history[start - 1].role === 'user') start--;
+      since = Math.max(since, start);
+    }
     const current = history.slice(since);
     const returning = since > 0;
     const messages: ChatMessage[] = [...current.map(({ role, content }) => ({ role, content })), { role: 'user', content: question }];
 
     const firstReply = !current.some((m) => m.role === 'assistant');
+    // "Hi, I need makeup services." (the website's WhatsApp button) in the middle of a chat: someone starting afresh
+    const restart = !firstReply && isGeneralRequest(question);
     // A new conversation: prices shown in an earlier one don't count (they're shown again for this booking)
-    if (returning && firstReply && chat.quotedArtist) {
+    if ((restart || (returning && firstReply)) && chat.quotedArtist) {
       await chats.setQuotedArtist(waId, null);
       chat.quotedArtist = undefined;
     }
 
     // Pooja's welcome is the whole first reply to a hello or "I need makeup services" (with the buttons on Meta)
-    if (firstReply && welcomeIsTheWholeReply(question)) {
+    if (restart || (firstReply && welcomeIsTheWholeReply(question))) {
       await transport.send(waId, WELCOME_MESSAGE, true);
       await chats.addReply(waId, WELCOME_MESSAGE, answered);
-      console.log(`${LOG} welcomed ${who(waId)}${returning ? ' (back after a break: new conversation)' : ''} via ${transport.name} ${seconds(Date.now() - started)} after the ${seconds(GATHER_MS)} wait`);
+      console.log(`${LOG} welcomed ${who(waId)}${restart ? ' (asked for makeup services again: new conversation)' : returning ? ' (back after a break: new conversation)' : ''} via ${transport.name} ${seconds(Date.now() - started)} after the ${seconds(GATHER_MS)} wait`);
       return;
     }
 
