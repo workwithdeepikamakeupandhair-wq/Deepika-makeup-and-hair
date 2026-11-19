@@ -350,7 +350,7 @@ async function saveChatLead(waId: string, chat: ChatInfo, ad?: { referral: Refer
   const phone = `+${waId}`;
   const existing = ad
     ? `SELECT 1 FROM bookings WHERE channel = 'whatsapp' AND phone = $1 AND created_at > now() - interval '30 days'
-          AND status NOT IN ('converted', 'lost')`
+          AND status NOT IN ('confirmed', 'lost')`
     : `SELECT 1 FROM bookings WHERE channel = 'whatsapp' AND phone = $1 AND created_at > now() - interval '120 days'
           AND status <> 'lost'`;
   if ((await pool.query(existing, [phone])).rowCount) return; // the usual case: one quick look, no lock
@@ -407,7 +407,7 @@ async function saveHandoffLead(waId: string, chat: ChatInfo, reason: string): Pr
   const db = getDb();
   const open = await db.query<{ id: string }>(
     `SELECT id FROM bookings WHERE channel = 'whatsapp' AND phone = $1 AND created_at > now() - interval '30 days'
-        AND status NOT IN ('converted', 'lost')
+        AND status NOT IN ('confirmed', 'lost')
       ORDER BY id DESC LIMIT 1`,
     [phone],
   );

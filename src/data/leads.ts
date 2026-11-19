@@ -4,12 +4,11 @@
  * click-to-WhatsApp ads) is one row in the `bookings` table; its `status` column holds the stage.
  */
 
+/** Confirmed: the booking is confirmed (a WhatsApp booking becomes confirmed when the team approves its payment). */
 export const LEAD_STAGES = [
   { id: 'new', label: 'New' },
   { id: 'contacted', label: 'Contacted' },
-  { id: 'consultation_booked', label: 'Consultation Booked' },
-  { id: 'trial_booked', label: 'Trial Booked' },
-  { id: 'converted', label: 'Converted' },
+  { id: 'confirmed', label: 'Confirmed' },
   { id: 'lost', label: 'Lost' },
 ] as const;
 

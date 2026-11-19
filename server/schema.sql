@@ -30,8 +30,8 @@ CREATE TABLE IF NOT EXISTS admin_users (
   created_at    timestamptz NOT NULL DEFAULT now()
 );
 
--- Every booking request is also a lead. `status` holds the lead stage (new, contacted, consultation_booked,
--- trial_booked, converted, lost). These columns track where it came from and who is handling it.
+-- Every booking request is also a lead. `status` holds the lead stage (new, contacted, confirmed, lost; see
+-- LEAD_STAGES in src/data/leads.ts). These columns track where it came from and who is handling it.
 ALTER TABLE bookings ADD COLUMN IF NOT EXISTS channel     text;         -- website_form, whatsapp, lead_form
 ALTER TABLE bookings ADD COLUMN IF NOT EXISTS campaign    text;         -- ad campaign name or ad headline
 ALTER TABLE bookings ADD COLUMN IF NOT EXISTS ad_name     text;
@@ -42,6 +42,9 @@ ALTER TABLE bookings ADD COLUMN IF NOT EXISTS updated_at  timestamptz NOT NULL D
 
 CREATE UNIQUE INDEX IF NOT EXISTS bookings_external_id_idx ON bookings (external_id) WHERE external_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS bookings_status_idx ON bookings (status);
+-- Stages renamed and removed on 2026-11-20: Converted is now Confirmed; Consultation Booked and Trial Booked are gone
+UPDATE bookings SET status = 'confirmed' WHERE status = 'converted';
+UPDATE bookings SET status = 'contacted' WHERE status IN ('consultation_booked', 'trial_booked');
 CREATE INDEX IF NOT EXISTS bookings_phone_idx ON bookings (phone);
 
 CREATE INDEX IF NOT EXISTS bookings_created_at_idx ON bookings (created_at DESC);

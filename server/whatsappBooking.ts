@@ -149,14 +149,14 @@ const toDraft = (r: DraftRow): Draft => ({
 
 /**
  * The customer's current WhatsApp booking: their latest one from the last 120 days that isn't lost (a confirmed one
- * too, so Pooja can answer questions about it). Leads the team marked converted by hand, without a WhatsApp booking,
+ * too, so Pooja can answer questions about it). Leads the team marked Confirmed by hand, without a WhatsApp booking,
  * don't count. Null when there's none, or without a database.
  */
 export async function currentBooking(waId: string): Promise<Draft | null> {
   if (!pool) return null;
   const { rows } = await pool.query<DraftRow>(
     `SELECT ${draftColumns()} FROM bookings
-      WHERE channel = 'whatsapp' AND phone = $1 AND status <> 'lost' AND (booking_status IS NOT NULL OR status <> 'converted')
+      WHERE channel = 'whatsapp' AND phone = $1 AND status <> 'lost' AND (booking_status IS NOT NULL OR status <> 'confirmed')
         AND created_at > now() - interval '120 days'
       ORDER BY id DESC LIMIT 1`,
     [`+${waId}`],
@@ -613,7 +613,7 @@ export async function bookingDetails(id: string): Promise<BookingDetails | null>
 export class BookingActionError extends Error {}
 
 /**
- * The team approves a booking after checking the payment: it becomes confirmed (and the lead converted), its time
+ * The team approves a booking after checking the payment: it becomes confirmed (lead stage Confirmed too), its time
  * stays taken on the calendar, and the confirmation message for the customer comes back, with their WhatsApp number.
  * `userId` is the dashboard user; null when approved on WhatsApp (an approval number in Settings).
  */
@@ -625,7 +625,7 @@ export async function approveBooking(id: string, userId: string | null): Promise
   if (d.status !== 'payment_review' && d.status !== 'awaiting_payment') throw new BookingActionError('Only a booking that is waiting for or showing an advance payment can be approved.');
   if (!d.eventDate || !d.eventTime || !d.artist || d.total === null || d.advance === null) throw new BookingActionError('This booking is missing its date, time, artist or price.');
   await getDb().query(
-    `UPDATE bookings SET booking_status = 'confirmed', status = 'converted', confirmed_at = now(), confirmed_by = $2, updated_at = now() WHERE id = $1`,
+    `UPDATE bookings SET booking_status = 'confirmed', status = 'confirmed', confirmed_at = now(), confirmed_by = $2, updated_at = now() WHERE id = $1`,
     [id, userId],
   );
   return { waId: r.channel === 'whatsapp' ? r.phone.replace(/\D/g, '') : null, message: bookingConfirmedMessage(summaryOf(d)), fullName: d.fullName };

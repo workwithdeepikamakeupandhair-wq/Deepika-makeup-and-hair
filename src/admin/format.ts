@@ -6,9 +6,7 @@ import { LEAD_CHANNELS, LEAD_SOURCES, LEAD_STAGES } from '../data/leads';
 export const STAGE_STYLE: Record<string, string> = {
   new: 'bg-[#FDF0E3] text-[#B45F14] border-[#F6D9BC]',
   contacted: 'bg-[#E8F0FE] text-[#2B5AB0] border-[#CFDDF8]',
-  consultation_booked: 'bg-[#F3EAFB] text-[#7A3FB0] border-[#E3D2F4]',
-  trial_booked: 'bg-[#FFF5D9] text-[#8A6100] border-[#F3E2AE]',
-  converted: 'bg-[#E4F4EA] text-[#1F7A45] border-[#C7E7D3]',
+  confirmed: 'bg-[#E4F4EA] text-[#1F7A45] border-[#C7E7D3]',
   lost: 'bg-[#F1EEEB] text-[#6A5F56] border-[#E2DCD6]',
 };
 

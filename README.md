@@ -148,7 +148,7 @@ advance and the calendar are worked out in code.
    customer is thanked word for word and the booking shows under *Payments to verify*. Nothing is marked paid
    automatically.
 9. **Approval:** the team checks the payment in the lead's panel and clicks **Approve booking**. The booking becomes
-   confirmed (lead stage *Converted*), its time stays taken on the calendar, and the customer gets the confirmation
+   confirmed (lead stage *Confirmed*), its time stays taken on the calendar, and the customer gets the confirmation
    on WhatsApp. **Payment not received — ask again** sends them back to step 8 with a polite message. WhatsApp only
    delivers these within 24 hours of the customer's last message; the panel warns when that window has passed.
 
@@ -336,7 +336,7 @@ Cloud API. Requirements:
 
 The dashboard lets you:
 
-- **Filter:** by stage (New, Contacted, Consultation Booked, Trial Booked, Converted, Lost, each with a count) and by source, or search by name, phone, email, campaign or place.
+- **Filter:** by stage (New, Contacted, Confirmed, Lost, each with a count; approving a WhatsApp booking's payment moves it to Confirmed) and by source, or search by name, phone, email, campaign or place.
 - **Edit in the list:** change the stage and the assigned team member.
 - **Open a lead** to see all its details: **Call / WhatsApp / Email** buttons, the customer's answers, and private team notes.
 - **Stay current:** the list refreshes itself every minute.
