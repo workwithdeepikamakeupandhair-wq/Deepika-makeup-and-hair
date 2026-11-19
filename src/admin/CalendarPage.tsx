@@ -1,11 +1,11 @@
 /**
  * Availability calendar: the team marks days as Free, Few slots left or Fully booked, and blocks the times it's busy.
- * The WhatsApp assistant reads these when a customer asks whether Deepika is free on a date or at a time. Unmarked
- * days count as open. Each day also shows how many leads have their event on it and its booked times (the team's
+ * The WhatsApp assistant reads these when a customer asks whether Deepika is free on a date or at a time. Days nobody
+ * marked are shown, and treated, as Free. Each day also shows how many leads have their event on it and its booked times (the team's
  * blocks and the WhatsApp bookings), so the team can see what's already taken.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronLeft, ChevronRight, Clock, Eraser, MessageCircle, MousePointerClick, RefreshCw, Trash2, Users } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Clock, MessageCircle, MousePointerClick, RefreshCw, Trash2, Users } from 'lucide-react';
 import { AVAILABILITY_STATUSES, MAX_DAYS_PER_CHANGE, type AvailabilityDay, type AvailabilityStatus, type CalendarLead } from '../data/availability';
 import { bookingStatusLabel, timeLabel, type CalendarAppointment, type TimeBlock } from '../data/bookingFlow';
 import { api, NotLoggedIn } from './api';
@@ -59,12 +59,11 @@ const STATUS_STYLE: Record<AvailabilityStatus, { cell: string; chip: string; dot
   },
 };
 
-const statusLabel = (status: AvailabilityStatus | undefined) => AVAILABILITY_STATUSES.find((s) => s.id === status)?.label ?? 'Not marked (open)';
+const statusLabel = (status: AvailabilityStatus | undefined) => AVAILABILITY_STATUSES.find((s) => s.id === status)?.label ?? 'Free';
 
 /** What the WhatsApp assistant tells a customer who asks about a day with this mark. */
-const ASSISTANT_SAYS: Record<AvailabilityStatus | 'none', string> = {
+const ASSISTANT_SAYS: Record<AvailabilityStatus, string> = {
   available: 'the date is open. For the time they ask for, it checks the booked hours above and offers the free hours nearby if it’s taken.',
-  none: 'the date is open (nothing is marked). For the time they ask for, it checks the booked hours above and offers the free hours nearby if it’s taken.',
   limited: 'only a few slots are left that day, so they should book soon. Times are still checked against the booked hours above.',
   booked: 'the date is fully booked at any time, and suggests the nearest open dates instead.',
 };
@@ -182,11 +181,16 @@ export const CalendarPage: React.FC<{ onLoggedOut: () => void }> = ({ onLoggedOu
   }, [appointments, blocks]);
 
   const monthKey = `${month.year}-${String(month.month + 1).padStart(2, '0')}`;
+  /** A day's mark; days nobody marked are Free from today on (past ones show no mark). */
+  const statusOf = useCallback((date: string): AvailabilityStatus | undefined => days[date]?.status ?? (date >= today ? 'available' : undefined), [days, today]);
   const monthCounts = useMemo(() => {
     const counts: Record<string, number> = {};
-    for (const d of Object.values(days)) if (d.date.startsWith(monthKey)) counts[d.status] = (counts[d.status] ?? 0) + 1;
+    for (const date of grid) {
+      const status = date.startsWith(monthKey) ? statusOf(date) : undefined;
+      if (status) counts[status] = (counts[status] ?? 0) + 1;
+    }
     return counts;
-  }, [days, monthKey]);
+  }, [grid, monthKey, statusOf]);
 
   const shiftMonth = (by: number) =>
     setMonth(({ year, month: m }) => {
@@ -266,11 +270,16 @@ export const CalendarPage: React.FC<{ onLoggedOut: () => void }> = ({ onLoggedOu
   }, [single, savedNote]);
 
   const saveNote = async () => {
-    if (!single || !singleDay) return;
+    if (!single) return;
     setNoteState('saving');
     try {
-      await api.markDays([single], singleDay.status, note.trim() || null);
-      setDays((prev) => ({ ...prev, [single]: { ...prev[single], note: note.trim() || null } }));
+      // A day nobody marked is Free: a note saves it as Free
+      const status = singleDay?.status ?? 'available';
+      await api.markDays([single], status, note.trim() || null);
+      setDays((prev) => ({
+        ...prev,
+        [single]: { date: single, status, note: note.trim() || null, updatedAt: new Date().toISOString(), updatedByName: prev[single]?.updatedByName ?? null },
+      }));
       startFresh.current = true;
       setNoteState('saved');
       void load(true);
@@ -363,10 +372,10 @@ export const CalendarPage: React.FC<{ onLoggedOut: () => void }> = ({ onLoggedOu
     }
   };
 
-  const currentStatus = single ? singleDay?.status : selected.length && selected.every((d) => days[d]?.status === days[selected[0]]?.status) ? days[selected[0]]?.status : undefined;
+  const currentStatus = single ? statusOf(single) : selected.length && selected.every((d) => statusOf(d) === statusOf(selected[0])) ? statusOf(selected[0]) : undefined;
   const sortedSelection = [...selected].sort();
   /** Which WhatsApp answer to describe; none when the selected days have different marks. */
-  const assistantKey: AvailabilityStatus | 'none' | null = currentStatus ?? (selected.every((d) => !days[d]) ? 'none' : null);
+  const assistantKey: AvailabilityStatus | null = currentStatus ?? null;
 
   return (
     <main className="mx-auto max-w-[1400px] px-4 py-6 sm:px-6 sm:py-8">
@@ -377,7 +386,7 @@ export const CalendarPage: React.FC<{ onLoggedOut: () => void }> = ({ onLoggedOu
             Mark the hours you're booked on each day (and whole days that are fully booked). Pooja on WhatsApp and the website chat check this calendar whenever a customer asks
             about a date or a time, and offer the free hours nearby when a time is taken. A time is free unless the day is fully booked, you've marked that hour booked, or one of
             Deepika's WhatsApp bookings overlaps it (each booking takes{' '}
-            {appointmentHours ? `${appointmentHours} hour${appointmentHours === 1 ? '' : 's'}` : 'the booking length'}, set in Settings). Days you don't mark count as open.
+            {appointmentHours ? `${appointmentHours} hour${appointmentHours === 1 ? '' : 's'}` : 'the booking length'}, set in Settings). Days you don't mark are Free.
           </p>
         </div>
         <button
@@ -439,9 +448,6 @@ export const CalendarPage: React.FC<{ onLoggedOut: () => void }> = ({ onLoggedOu
               </li>
             ))}
             <li className="inline-flex items-center gap-1.5">
-              <span aria-hidden className="w-2.5 h-2.5 rounded-full border border-[#D9D0C5] bg-white" /> Not marked = open
-            </li>
-            <li className="inline-flex items-center gap-1.5">
               <Users aria-hidden className="w-3.5 h-3.5 text-[#9E7D53]" /> Leads with their event that day
             </li>
             <li className="hidden sm:inline-flex items-center gap-1.5">
@@ -460,7 +466,8 @@ export const CalendarPage: React.FC<{ onLoggedOut: () => void }> = ({ onLoggedOu
               const inMonth = date.startsWith(monthKey);
               const past = date < today;
               const day = days[date];
-              const style = day ? STATUS_STYLE[day.status] : null;
+              const status = statusOf(date);
+              const style = status ? STATUS_STYLE[status] : null;
               const isSelected = selected.includes(date);
               const n = leadsByDay[date]?.length ?? 0;
               const times = timesByDay[date]?.length ?? 0;
@@ -472,7 +479,7 @@ export const CalendarPage: React.FC<{ onLoggedOut: () => void }> = ({ onLoggedOu
                   onClick={(e) => pick(date, e)}
                   disabled={past}
                   aria-pressed={isSelected}
-                  aria-label={`${fmt(date, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}: ${statusLabel(day?.status)}${n ? `, ${n} lead${n > 1 ? 's' : ''}` : ''}${times ? `, ${times} booked time${times > 1 ? 's' : ''}` : ''}${date === today ? ' (today)' : ''}`}
+                  aria-label={`${fmt(date, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}: ${past && !day ? 'past' : statusLabel(status)}${n ? `, ${n} lead${n > 1 ? 's' : ''}` : ''}${times ? `, ${times} booked time${times > 1 ? 's' : ''}` : ''}${date === today ? ' (today)' : ''}`}
                   className={`relative flex min-h-[54px] sm:min-h-[92px] flex-col items-start gap-1 rounded-lg sm:rounded-xl border p-1.5 sm:p-2 text-left transition-[box-shadow,background-color] outline-none focus-visible:ring-2 focus-visible:ring-[#9E7D53] ${
                     style ? style.cell : 'border-[#EFE9E2] bg-white hover:bg-[#FCFAF7]'
                   } ${inMonth ? '' : 'opacity-45'} ${past ? 'cursor-default opacity-40' : 'cursor-pointer'} ${
@@ -486,10 +493,10 @@ export const CalendarPage: React.FC<{ onLoggedOut: () => void }> = ({ onLoggedOu
                   >
                     {Number(date.slice(8))}
                   </span>
-                  {day && (
+                  {status && (
                     <>
                       <span aria-hidden className={`hidden sm:block max-w-full truncate rounded-full px-2 py-0.5 text-[11px] font-semibold ${style!.chip}`}>
-                        {statusLabel(day.status)}
+                        {statusLabel(status)}
                       </span>
                       <span aria-hidden className={`sm:hidden absolute bottom-1.5 left-1.5 w-2 h-2 rounded-full ${style!.dot}`} />
                     </>
@@ -569,7 +576,7 @@ export const CalendarPage: React.FC<{ onLoggedOut: () => void }> = ({ onLoggedOu
                   {selected.length > 6 ? ` and ${selected.length - 6} more` : ''}
                 </p>
               )}
-              {single && <p className="mt-1 text-xs text-[#6A5F56]">Whole day: {statusLabel(singleDay?.status)}{singleDay?.updatedByName ? ` · marked by ${singleDay.updatedByName}` : ''}</p>}
+              {single && <p className="mt-1 text-xs text-[#6A5F56]">Whole day: {statusLabel(statusOf(single))}{singleDay?.updatedByName ? ` · marked by ${singleDay.updatedByName}` : ''}</p>}
 
               {/* The day's hours: tap to mark booked or free. WhatsApp bookings show here on their own. */}
               {single && (
@@ -653,13 +660,6 @@ export const CalendarPage: React.FC<{ onLoggedOut: () => void }> = ({ onLoggedOu
                     <span aria-hidden className={`w-2.5 h-2.5 rounded-full ${STATUS_STYLE[s.id].dot}`} /> {s.label}
                   </button>
                 ))}
-                <button
-                  onClick={() => void mark(null)}
-                  disabled={saving || selected.every((d) => !days[d])}
-                  className="flex items-center gap-2.5 rounded-xl border border-[#E7DFD6] px-4 py-2.5 text-sm font-medium text-[#6A5F56] hover:bg-[#F4EFEA] disabled:opacity-40"
-                >
-                  <Eraser className="w-4 h-4" aria-hidden /> Clear mark (open)
-                </button>
               </div>
 
               {assistantKey && (
@@ -781,7 +781,7 @@ export const CalendarPage: React.FC<{ onLoggedOut: () => void }> = ({ onLoggedOu
                 </section>
               )}
 
-              {single && singleDay && (
+              {single && (
                 <div className="mt-5">
                   <label htmlFor="day-note" className="block text-xs uppercase tracking-[0.12em] text-[#9E7D53] mb-2">
                     Team note (never shown to customers)
