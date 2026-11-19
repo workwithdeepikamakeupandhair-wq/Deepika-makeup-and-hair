@@ -83,7 +83,9 @@ export default function PricesPage() {
             onClick={() => book(null)}
             className="btn-gold shrink-0 px-4 sm:px-5 py-2.5 rounded-full text-[11px] sm:text-xs uppercase tracking-[0.12em] font-medium"
           >
-            Book Appointment
+            {/* Phones: short, so the business name fits beside it */}
+            <span className="sm:hidden">Book</span>
+            <span className="hidden sm:inline">Book Appointment</span>
           </button>
         </div>
       </header>

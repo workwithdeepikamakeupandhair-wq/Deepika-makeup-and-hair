@@ -44,11 +44,11 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenBooking }) => {
             : '-translate-y-full opacity-0 pointer-events-none py-3.5'
         }`}
       >
-        <div className="max-w-7xl mx-auto px-5 sm:px-8 flex items-center justify-between gap-6">
+        <div className="max-w-7xl mx-auto px-4 sm:px-8 flex items-center justify-between gap-3 sm:gap-6">
           {/* Zone 1: Brand Wordmark (Single text element) */}
           <a
             href="#"
-            className="text-xl sm:text-2xl font-serif tracking-tight font-medium text-[#1D1714] whitespace-nowrap shrink-0 hover:text-[#9E7D53] transition-colors"
+            className="text-lg min-[400px]:text-xl sm:text-2xl font-serif tracking-tight font-medium text-[#1D1714] whitespace-nowrap shrink-0 hover:text-[#9E7D53] transition-colors"
           >
             Deepika Makeup &amp; Hair
           </a>
@@ -66,8 +66,8 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenBooking }) => {
             ))}
           </nav>
 
-          {/* Zone 3: 1 Primary Action */}
-          <div className="flex items-center gap-3 shrink-0">
+          {/* Zone 3: 1 Primary Action (phones: a short "Book", so the menu button always fits on screen) */}
+          <div className="flex items-center gap-2 sm:gap-3 shrink-0">
             <WhatsAppButton
               className="hidden sm:block"
               buttonClassName="inline-flex items-center justify-center w-9 h-9 rounded-full border border-[#E7DFD6] text-[#25D366] hover:bg-[#25D366] hover:border-[#25D366] hover:text-white transition-colors"
@@ -76,15 +76,16 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenBooking }) => {
 
             <button
               onClick={onOpenBooking}
-              className="btn-gold px-5 py-2.5 rounded-full text-xs uppercase tracking-[0.12em] font-sans font-medium whitespace-nowrap shrink-0"
+              className="btn-gold px-4 sm:px-5 py-2.5 rounded-full text-xs uppercase tracking-[0.12em] font-sans font-medium whitespace-nowrap shrink-0"
             >
-              Book Appointment
+              <span className="sm:hidden">Book</span>
+              <span className="hidden sm:inline">Book Appointment</span>
             </button>
 
             {/* Mobile menu toggle */}
             <button
               onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-              className="xl:hidden p-2 text-[#1D1714] hover:text-[#9E7D53] transition-colors"
+              className="xl:hidden p-2 -mr-2 text-[#1D1714] hover:text-[#9E7D53] transition-colors"
               aria-label="Toggle navigation menu"
               aria-expanded={mobileMenuOpen}
             >

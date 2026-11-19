@@ -14,6 +14,8 @@ interface ChatMessage {
 
 interface ChatWidgetProps {
   onOpenBooking: () => void;
+  /** On phones, keep the floating buttons hidden until the page's first screen (the hero) is scrolled past. */
+  hideOverHeroOnPhones?: boolean;
 }
 
 const GREETING: ChatMessage = {
@@ -60,11 +62,21 @@ function MessageText({ text }: { text: string }) {
   );
 }
 
-export const ChatWidget: React.FC<ChatWidgetProps> = ({ onOpenBooking }) => {
+export const ChatWidget: React.FC<ChatWidgetProps> = ({ onOpenBooking, hideOverHeroOnPhones = false }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([GREETING]);
   const [input, setInput] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
+  // Phones, home page: the hero has its own WhatsApp and booking buttons, so the floating ones wait until it's scrolled past
+  const [pastHero, setPastHero] = useState(!hideOverHeroOnPhones);
+
+  useEffect(() => {
+    if (!hideOverHeroOnPhones) return;
+    const onScroll = () => setPastHero(window.scrollY > window.innerHeight * 0.6);
+    onScroll();
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => window.removeEventListener('scroll', onScroll);
+  }, [hideOverHeroOnPhones]);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -168,7 +180,7 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({ onOpenBooking }) => {
         <section
           role="dialog"
           aria-label="Chat with Deepika's assistant"
-          className="chat-panel-in fixed z-[45] bottom-24 right-4 left-4 sm:left-auto sm:right-6 sm:w-[380px] h-[min(600px,calc(100dvh-8rem))] flex flex-col bg-[#FAF7F2] border border-[#E7DFD6] rounded-2xl shadow-2xl overflow-hidden"
+          className="chat-panel-in fixed z-[45] bottom-20 sm:bottom-24 right-3 left-3 sm:left-auto sm:right-6 sm:w-[380px] h-[min(600px,calc(100dvh-7rem))] flex flex-col bg-[#FAF7F2] border border-[#E7DFD6] rounded-2xl shadow-2xl overflow-hidden"
         >
           {/* Header */}
           <header className="px-5 py-4 bg-[#1D1714] text-[#FAF7F2] flex items-center justify-between gap-3">
@@ -281,7 +293,12 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({ onOpenBooking }) => {
 
       {/* Launchers — wrapper does the positioning because .btn-gold sets position: relative.
           The Instagram link sits above the chat button and steps aside while the chat panel is open. */}
-      <div className="fixed z-[45] bottom-5 right-4 sm:right-6 flex flex-col items-center gap-3">
+      {/* Phones: smaller and closer to the edge, so they cover less of the page */}
+      <div
+        className={`fixed z-[45] bottom-4 right-3 sm:bottom-5 sm:right-6 flex flex-col items-center gap-2.5 sm:gap-3 transition-[opacity,translate] duration-300 ${
+          pastHero || isOpen ? '' : 'max-sm:opacity-0 max-sm:translate-y-4 max-sm:pointer-events-none'
+        }`}
+      >
         {!isOpen && (
           <a
             href={BUSINESS_INFO.instagram}
@@ -289,15 +306,15 @@ export const ChatWidget: React.FC<ChatWidgetProps> = ({ onOpenBooking }) => {
             rel="noopener noreferrer"
             aria-label={`Follow ${BUSINESS_INFO.instagramHandle} on Instagram (opens in a new tab)`}
             title={`Follow ${BUSINESS_INFO.instagramHandle} on Instagram`}
-            className="w-12 h-12 rounded-full shadow-xl flex items-center justify-center text-white transition-transform hover:scale-105 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#C5A880]"
+            className="w-10 h-10 sm:w-12 sm:h-12 rounded-full shadow-xl flex items-center justify-center text-white transition-transform hover:scale-105 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#C5A880]"
             style={{ background: INSTAGRAM_GRADIENT }}
           >
-            <Instagram className="w-6 h-6" />
+            <Instagram className="w-5 h-5 sm:w-6 sm:h-6" />
           </a>
         )}
         <button
           onClick={() => setIsOpen((o) => !o)}
-          className="btn-gold w-14 h-14 rounded-full shadow-xl flex items-center justify-center"
+          className="btn-gold w-12 h-12 sm:w-14 sm:h-14 rounded-full shadow-xl flex items-center justify-center"
           aria-label={isOpen ? 'Close chat' : 'Chat with us'}
           aria-expanded={isOpen}
         >

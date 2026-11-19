@@ -90,7 +90,7 @@ export default function App() {
       </main>
 
       {/* AI chat assistant (RAG over Neon + pgvector) */}
-      <ChatWidget onOpenBooking={handleOpenBooking} />
+      <ChatWidget onOpenBooking={handleOpenBooking} hideOverHeroOnPhones />
 
       {/* Interactive Consultation / Booking Modal */}
       <BookingModal

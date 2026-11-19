@@ -35,7 +35,8 @@ export const ContactAndFooter: React.FC<ContactAndFooterProps> = ({ onOpenBookin
   return (
     <footer id="contact" className="bg-[#1D1714] text-[#FAF7F2] border-t border-[#3A322C]">
       {/* Contact Section */}
-      <div className="max-w-7xl mx-auto px-5 sm:px-8 py-20 lg:py-24">
+      {/* Phones: extra room at the bottom so the floating Instagram and chat buttons don't cover the footer links */}
+      <div className="max-w-7xl mx-auto px-5 sm:px-8 pt-20 pb-32 sm:pb-20 lg:py-24">
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-12 lg:gap-16">
           {/* Left Column: Business Identity & Direct Channels */}
           <div className="lg:col-span-6 space-y-6">
@@ -91,21 +92,26 @@ export const ContactAndFooter: React.FC<ContactAndFooterProps> = ({ onOpenBookin
                   <p className="text-[10px] uppercase font-sans tracking-wider text-[#A89F93]">
                     Email · Bridal inquiry, ready to send
                   </p>
-                  <p className="text-xs font-semibold text-white group-hover:text-[#C5A880] transition-colors break-all">
-                    {BUSINESS_INFO.email}
+                  {/* A narrow screen breaks the long address at the "@", not mid-word */}
+                  <p className="text-xs font-semibold text-white group-hover:text-[#C5A880] transition-colors [overflow-wrap:anywhere]">
+                    {BUSINESS_INFO.email.split('@')[0]}
+                    <wbr />@{BUSINESS_INFO.email.split('@')[1]}
                   </p>
                 </div>
               </a>
             </div>
 
-            <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[#A89F93]">
-              <Phone className="w-3.5 h-3.5 text-[#C5A880] shrink-0" />
-              <span>Prefer a call?</span>
-              {WHATSAPP_CONTACTS.map((c) => (
-                <a key={c.country} href={`tel:${c.tel}`} className="text-white hover:text-[#C5A880] hover:underline underline-offset-2">
-                  {c.country} {c.number}
-                </a>
-              ))}
+            <p className="flex items-start gap-3 text-xs text-[#A89F93]">
+              <Phone className="w-3.5 h-3.5 mt-px text-[#C5A880] shrink-0" />
+              {/* Wrapped numbers line up with the text, not under the icon */}
+              <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                <span>Prefer a call?</span>
+                {WHATSAPP_CONTACTS.map((c) => (
+                  <a key={c.country} href={`tel:${c.tel}`} className="text-white whitespace-nowrap hover:text-[#C5A880] hover:underline underline-offset-2">
+                    {c.country} {c.number}
+                  </a>
+                ))}
+              </span>
             </p>
 
             {/* Studio Hours & Location */}
