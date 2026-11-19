@@ -353,9 +353,13 @@ change), and say whether it's free or booked only from these marks.
 | **Few slots left** | Only a few slots are left that day |
 | **Fully booked** | The date is booked, plus the nearest open dates |
 
-**Times of day.** A time is free unless the day is Fully booked, a **blocked time** covers it, or one of Deepika's
-WhatsApp bookings overlaps it (each takes the booking length from Settings). Select a day to see its booked times and
-to block one (e.g. a booking made outside WhatsApp: start, end, private note). Blocks are stored in `calendar_blocks`.
+**Times of day.** Select a day and tap its **booked hours** (4 AM–9 PM buttons; tap again to free one). Hours next to
+each other join into one block (8, 9 and 10 AM → 8–11 AM), and a time with a note or not on the hour (7:30–10:00) can be
+added below. WhatsApp bookings show on their own (green once approved, amber while waiting for the advance). A time is
+free unless the day is Fully booked, a booked hour covers it, or one of Deepika's WhatsApp bookings overlaps it (each
+takes the booking length from Settings). Pooja checks the exact time; when it's taken she offers one hour earlier or
+later first, then the nearest free hours that day, and she can list a day's free hours. **Fully booked** is for a
+whole day that's gone: no time is offered then. Blocks are stored in `calendar_blocks`.
 
 - **Mark days:** click a day, then choose a mark. *Select several days* (or Ctrl/⌘-click, or Shift-click for a range)
   marks many at once. *Clear mark* makes a day open again. Past days can't be changed. After a mark is saved, the next

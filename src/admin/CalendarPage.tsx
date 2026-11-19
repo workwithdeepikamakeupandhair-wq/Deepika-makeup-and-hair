@@ -63,9 +63,9 @@ const statusLabel = (status: AvailabilityStatus | undefined) => AVAILABILITY_STA
 
 /** What the WhatsApp assistant tells a customer who asks about a day with this mark. */
 const ASSISTANT_SAYS: Record<AvailabilityStatus | 'none', string> = {
-  available: 'the date is open. For the time they ask for, it checks the booked times below and offers the nearest free times if it’s taken.',
-  none: 'the date is open (nothing is marked). For the time they ask for, it checks the booked times below and offers the nearest free times if it’s taken.',
-  limited: 'only a few slots are left that day, so they should book soon. Times are still checked against the booked times below.',
+  available: 'the date is open. For the time they ask for, it checks the booked hours above and offers the free hours nearby if it’s taken.',
+  none: 'the date is open (nothing is marked). For the time they ask for, it checks the booked hours above and offers the free hours nearby if it’s taken.',
+  limited: 'only a few slots are left that day, so they should book soon. Times are still checked against the booked hours above.',
   booked: 'the date is fully booked at any time, and suggests the nearest open dates instead.',
 };
 
@@ -75,6 +75,25 @@ const addHours = (hhmm: string, hours: number) => {
   const total = Math.min(h * 60 + m + Math.round(hours * 60), 23 * 60 + 59);
   return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
 };
+
+/** The hour buttons for a day: whole hours from 4 AM to 9 PM, the same start times the assistant offers. */
+const HOURS = Array.from({ length: 18 }, (_, i) => 4 + i);
+const hh = (hour: number) => `${String(hour).padStart(2, '0')}:00`;
+const minutesOf = (hhmm: string) => {
+  const [h, m] = hhmm.split(':').map(Number);
+  return h * 60 + m;
+};
+const hourLabel = (hour: number) => `${hour % 12 || 12} ${hour < 12 ? 'AM' : 'PM'}`;
+
+/** A compact range for the month grid: "8–11 AM", "11:30 AM–1 PM". */
+function rangeShort(start: string, end: string): string {
+  const part = (hhmm: string) => {
+    const [h, m] = hhmm.split(':').map(Number);
+    return { text: `${h % 12 || 12}${m ? `:${String(m).padStart(2, '0')}` : ''}`, ampm: h < 12 ? 'AM' : 'PM' };
+  };
+  const [a, b] = [part(start), part(end)];
+  return a.ampm === b.ampm ? `${a.text}–${b.text} ${b.ampm}` : `${a.text} ${a.ampm}–${b.text} ${b.ampm}`;
+}
 
 /** One booked time on a day: a WhatsApp booking or a team block. */
 type BookedTime = { kind: 'appointment'; start: string; end: string; item: CalendarAppointment } | { kind: 'block'; start: string; end: string; item: TimeBlock };
@@ -285,12 +304,12 @@ export const CalendarPage: React.FC<{ onLoggedOut: () => void }> = ({ onLoggedOu
     setBlockError('');
     try {
       const block = await api.addTimeBlock(single, blockStart, blockEnd, blockNote.trim() || null);
-      setBlocks((prev) => [...prev, block]);
+      await load(true); // touching times with the same note were joined into one
       setBlockStart('');
       setBlockEnd('');
       setBlockNote('');
       startFresh.current = true;
-      setAnnouncement(`${timeLabel(block.start)} to ${timeLabel(block.end)} blocked on ${fmt(single, { month: 'short', day: 'numeric' })}.`);
+      setAnnouncement(`${timeLabel(block.start)} to ${timeLabel(block.end)} marked as booked on ${fmt(single, { month: 'short', day: 'numeric' })}.`);
     } catch (err) {
       if (err instanceof NotLoggedIn) onLoggedOut();
       else setBlockError(err instanceof Error ? err.message : 'Something went wrong.');
@@ -313,6 +332,37 @@ export const CalendarPage: React.FC<{ onLoggedOut: () => void }> = ({ onLoggedOu
     }
   };
 
+  // ----- The hour buttons: tap a free hour to mark it booked, tap a booked one to free it -----
+  const [hourSaving, setHourSaving] = useState<number | null>(null);
+  /** What takes each hour of the selected day: a WhatsApp booking of Deepika's, a team block, or nothing. */
+  const hourState = (hour: number): { kind: 'free' } | BookedTime => {
+    const [from, to] = [hour * 60, (hour + 1) * 60];
+    const covers = (t: BookedTime) => minutesOf(t.start) < to && minutesOf(t.end) > from;
+    const list = (single && timesByDay[single]) || [];
+    return (
+      list.find((t) => t.kind === 'appointment' && t.item.artist !== 'senior' && covers(t)) ??
+      list.find((t) => t.kind === 'block' && covers(t)) ?? { kind: 'free' }
+    );
+  };
+
+  const toggleHour = async (hour: number) => {
+    if (!single || hourSaving !== null) return;
+    const state = hourState(hour);
+    if (state.kind === 'appointment') return; // a customer's booking: changed from Leads, not here
+    setHourSaving(hour);
+    try {
+      if (state.kind === 'free') await api.addTimeBlock(single, hh(hour), hh(hour + 1), null);
+      else await api.freeTime(single, hh(hour), hh(hour + 1));
+      await load(true);
+      setError('');
+      setAnnouncement(`${hourLabel(hour)} on ${fmt(single, { month: 'short', day: 'numeric' })} is now ${state.kind === 'free' ? 'booked' : 'free'}.`);
+    } catch (err) {
+      handleError(err);
+    } finally {
+      setHourSaving(null);
+    }
+  };
+
   const currentStatus = single ? singleDay?.status : selected.length && selected.every((d) => days[d]?.status === days[selected[0]]?.status) ? days[selected[0]]?.status : undefined;
   const sortedSelection = [...selected].sort();
   /** Which WhatsApp answer to describe; none when the selected days have different marks. */
@@ -324,8 +374,9 @@ export const CalendarPage: React.FC<{ onLoggedOut: () => void }> = ({ onLoggedOu
         <div>
           <h1 className="font-serif text-3xl sm:text-4xl">Calendar</h1>
           <p className="mt-1 max-w-3xl text-sm text-[#6A5F56]">
-            Mark the days you're free or fully booked, and block the times you're busy. The WhatsApp assistant and the website chat check this calendar whenever a customer asks
-            about a date or a time. A time is free unless the day is fully booked, you've blocked it, or one of Deepika's WhatsApp bookings overlaps it (each booking takes{' '}
+            Mark the hours you're booked on each day (and whole days that are fully booked). Pooja on WhatsApp and the website chat check this calendar whenever a customer asks
+            about a date or a time, and offer the free hours nearby when a time is taken. A time is free unless the day is fully booked, you've marked that hour booked, or one of
+            Deepika's WhatsApp bookings overlaps it (each booking takes{' '}
             {appointmentHours ? `${appointmentHours} hour${appointmentHours === 1 ? '' : 's'}` : 'the booking length'}, set in Settings). Days you don't mark count as open.
           </p>
         </div>
@@ -443,6 +494,22 @@ export const CalendarPage: React.FC<{ onLoggedOut: () => void }> = ({ onLoggedOu
                       <span aria-hidden className={`sm:hidden absolute bottom-1.5 left-1.5 w-2 h-2 rounded-full ${style!.dot}`} />
                     </>
                   )}
+                  {/* Booked times (computers): the first two, then "+N more" */}
+                  {times > 0 && (
+                    <span aria-hidden className="hidden sm:flex max-w-full flex-col gap-0.5">
+                      {timesByDay[date].slice(0, 2).map((t) => (
+                        <span
+                          key={t.kind === 'appointment' ? `a${t.item.leadId}` : `b${t.item.id}`}
+                          className={`inline-flex max-w-full items-center gap-1 truncate rounded-md px-1.5 py-0.5 text-[10px] font-semibold tabular-nums ${
+                            t.kind === 'block' ? 'bg-[#1D1714] text-white' : t.item.status === 'confirmed' ? 'bg-[#D5EFDF] text-[#1F7A45]' : 'bg-[#FBEBC0] text-[#8A6100]'
+                          }`}
+                        >
+                          <Clock className="w-2.5 h-2.5 shrink-0" /> {rangeShort(t.start, t.end)}
+                        </span>
+                      ))}
+                      {times > 2 && <span className="text-[10px] font-semibold text-[#6A5F56]">+{times - 2} more</span>}
+                    </span>
+                  )}
                   {day?.note && (
                     <span aria-hidden className="hidden md:block max-w-full truncate text-[11px] text-[#6A5F56]" title={day.note}>
                       {day.note}
@@ -451,8 +518,8 @@ export const CalendarPage: React.FC<{ onLoggedOut: () => void }> = ({ onLoggedOu
                   {(n > 0 || times > 0) && (
                     <span aria-hidden className="absolute bottom-1 right-1 sm:bottom-auto sm:top-1.5 sm:right-1.5 flex items-center gap-1">
                       {times > 0 && (
-                        <span className="hidden sm:inline-flex items-center gap-0.5 rounded-full bg-white/90 px-1.5 py-0.5 text-[10px] font-semibold text-[#5A4D42]">
-                          <Clock className="w-3 h-3" /> {times}
+                        <span className="sm:hidden inline-flex items-center gap-0.5 rounded-full bg-white/90 px-1 py-0.5 text-[10px] font-semibold text-[#5A4D42]">
+                          <Clock className="w-2.5 h-2.5" /> {times}
                         </span>
                       )}
                       {n > 0 && (
@@ -475,13 +542,13 @@ export const CalendarPage: React.FC<{ onLoggedOut: () => void }> = ({ onLoggedOu
         <aside aria-labelledby="calendar-panel" className="rounded-2xl border border-[#E7DFD6] bg-white p-4 sm:p-5 shadow-xs lg:sticky lg:top-20">
           {selected.length === 0 ? (
             <>
-              <h2 id="calendar-panel" className="font-serif text-xl">Mark your days</h2>
+              <h2 id="calendar-panel" className="font-serif text-xl">Mark your days and hours</h2>
               <p className="mt-2 text-sm text-[#6A5F56] leading-relaxed">
-                Tap a day, then choose <strong>Free</strong>, <strong>Few slots left</strong> or <strong>Fully booked</strong>. To mark several days at once, turn on
-                “Select several days” (or Ctrl/⌘-click them).
+                Tap a day to see its hours, then tap the hours that are <strong>booked</strong> (for example a booking made by phone). WhatsApp bookings appear there on their own,
+                and stay booked once you approve them.
               </p>
               <p className="mt-2 text-sm text-[#6A5F56] leading-relaxed">
-                A single day also shows its <strong>booked times</strong>: Deepika's WhatsApp bookings, and the times you block yourself (for example a booking made by phone).
+                Use <strong>Fully booked</strong> only when the whole day is taken. To mark several days at once, turn on “Select several days” (or Ctrl/⌘-click them).
               </p>
               <div className="mt-4 flex gap-3 rounded-xl bg-[#F6EFE7] p-3.5 text-sm text-[#5A4D42]">
                 <MessageCircle className="w-4 h-4 mt-0.5 shrink-0 text-[#25D366]" aria-hidden />
@@ -502,9 +569,77 @@ export const CalendarPage: React.FC<{ onLoggedOut: () => void }> = ({ onLoggedOu
                   {selected.length > 6 ? ` and ${selected.length - 6} more` : ''}
                 </p>
               )}
-              {single && <p className="mt-1 text-xs text-[#6A5F56]">Now: {statusLabel(singleDay?.status)}{singleDay?.updatedByName ? ` · marked by ${singleDay.updatedByName}` : ''}</p>}
+              {single && <p className="mt-1 text-xs text-[#6A5F56]">Whole day: {statusLabel(singleDay?.status)}{singleDay?.updatedByName ? ` · marked by ${singleDay.updatedByName}` : ''}</p>}
 
-              <div className="mt-4 grid grid-cols-1 gap-2" role="group" aria-label="Set availability">
+              {/* The day's hours: tap to mark booked or free. WhatsApp bookings show here on their own. */}
+              {single && (
+                <section className="mt-4" aria-labelledby="day-hours">
+                  <h3 id="day-hours" className="text-xs uppercase tracking-[0.12em] text-[#9E7D53]">
+                    Booked hours
+                  </h3>
+                  <p className="mt-1 text-xs leading-relaxed text-[#6A5F56]">
+                    Tap the hours that are taken (for example a booking made by phone); tap again to free them. When a customer asks for a taken time, Pooja offers the free hours nearby.
+                  </p>
+                  {singleDay?.status === 'booked' && (
+                    <p className="mt-2 rounded-lg bg-[#FDECEC] px-3 py-2 text-xs text-[#B42318]">
+                      The whole day is marked <strong>Fully booked</strong>, so Pooja offers no time at all. If only some hours are taken, clear that mark below and tap those hours instead.
+                    </p>
+                  )}
+                  <div className="mt-3 grid grid-cols-4 gap-1.5" role="group" aria-label="Hours of the day">
+                    {HOURS.map((hour) => {
+                      const state = hourState(hour);
+                      const who =
+                        state.kind === 'appointment'
+                          ? `${state.item.fullName} (lead #${state.item.leadId}) · ${bookingStatusLabel(state.item.status)}`
+                          : state.kind === 'block'
+                            ? `Booked ${timeLabel(state.start)}–${timeLabel(state.end)}${state.item.note ? `: ${state.item.note}` : ''}`
+                            : 'Free';
+                      return (
+                        <button
+                          key={hour}
+                          type="button"
+                          onClick={() => void toggleHour(hour)}
+                          disabled={hourSaving !== null || state.kind === 'appointment'}
+                          aria-pressed={state.kind !== 'free'}
+                          aria-label={`${hourLabel(hour)}: ${who}`}
+                          title={state.kind === 'appointment' ? `${who} (change it from Leads)` : who}
+                          className={`relative rounded-lg border px-1 py-2 text-xs font-semibold tabular-nums transition-colors disabled:cursor-default ${
+                            state.kind === 'block'
+                              ? 'border-[#1D1714] bg-[#1D1714] text-white hover:bg-[#3A322C]'
+                              : state.kind === 'appointment'
+                                ? state.item.status === 'confirmed'
+                                  ? 'border-[#C7E7D3] bg-[#D5EFDF] text-[#1F7A45]'
+                                  : 'border-[#F3E2AE] bg-[#FBEBC0] text-[#8A6100]'
+                                : 'border-[#E7DFD6] bg-white text-[#1D1714] hover:border-[#9E7D53] hover:bg-[#FAF7F2]'
+                          } ${hourSaving === hour ? 'opacity-50' : ''}`}
+                        >
+                          {hourLabel(hour)}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <ul className="mt-2.5 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-[#6A5F56]" aria-label="Hour colours">
+                    <li className="inline-flex items-center gap-1">
+                      <span aria-hidden className="w-2.5 h-2.5 rounded-sm border border-[#E7DFD6] bg-white" /> Free
+                    </li>
+                    <li className="inline-flex items-center gap-1">
+                      <span aria-hidden className="w-2.5 h-2.5 rounded-sm bg-[#1D1714]" /> Booked by you
+                    </li>
+                    <li className="inline-flex items-center gap-1">
+                      <span aria-hidden className="w-2.5 h-2.5 rounded-sm bg-[#D5EFDF] border border-[#C7E7D3]" /> Confirmed booking
+                    </li>
+                    <li className="inline-flex items-center gap-1">
+                      <span aria-hidden className="w-2.5 h-2.5 rounded-sm bg-[#FBEBC0] border border-[#F3E2AE]" /> Waiting for the advance
+                    </li>
+                  </ul>
+                </section>
+              )}
+
+              <h3 className="mt-6 text-xs uppercase tracking-[0.12em] text-[#9E7D53]">{single ? 'Whole day' : 'Mark these days'}</h3>
+              <p className="mt-1 text-xs leading-relaxed text-[#6A5F56]">
+                <strong>Fully booked</strong> closes the whole day: Pooja offers no time at all and suggests other dates.{single ? ' If only some hours are taken, tap them above instead.' : ''}
+              </p>
+              <div className="mt-3 grid grid-cols-1 gap-2" role="group" aria-label="Set availability">
                 {AVAILABILITY_STATUSES.map((s) => (
                   <button
                     key={s.id}
@@ -534,48 +669,11 @@ export const CalendarPage: React.FC<{ onLoggedOut: () => void }> = ({ onLoggedOu
                 </p>
               )}
 
-              {single && singleDay && (
-                <div className="mt-5">
-                  <label htmlFor="day-note" className="block text-xs uppercase tracking-[0.12em] text-[#9E7D53] mb-2">
-                    Team note (never shown to customers)
-                  </label>
-                  <textarea
-                    id="day-note"
-                    rows={3}
-                    maxLength={500}
-                    value={note}
-                    onChange={(e) => {
-                      setNote(e.target.value);
-                      setNoteState('idle');
-                    }}
-                    placeholder="e.g. Priya's wedding, ready by 7 am"
-                    className="w-full rounded-xl border border-[#D9D0C5] bg-white p-3 text-sm outline-none focus:border-[#9E7D53] focus:ring-2 focus:ring-[#C5A880]/40"
-                  />
-                  <div className="mt-2 flex items-center gap-3">
-                    <button
-                      onClick={saveNote}
-                      disabled={noteState === 'saving' || note.trim() === savedNote}
-                      className="rounded-full bg-[#1D1714] px-5 py-2 text-xs font-semibold uppercase tracking-[0.12em] text-white hover:bg-[#3A322C] disabled:opacity-40"
-                    >
-                      {noteState === 'saving' ? 'Saving…' : 'Save note'}
-                    </button>
-                    {noteState === 'saved' && (
-                      <span className="text-xs text-[#1F7A45]" role="status">
-                        Saved
-                      </span>
-                    )}
-                  </div>
-                </div>
-              )}
-
               {single && (
-                <section className="mt-5" aria-labelledby="booked-times">
+                <section className="mt-6" aria-labelledby="booked-times">
                   <h3 id="booked-times" className="text-xs uppercase tracking-[0.12em] text-[#9E7D53] mb-2">
-                    Booked times
+                    All booked times this day
                   </h3>
-                  {singleDay?.status === 'booked' && (
-                    <p className="mb-2 text-xs text-[#B42318]">The whole day is marked Fully booked, so no time is offered to customers.</p>
-                  )}
                   {timesByDay[single]?.length ? (
                     <ul className="divide-y divide-[#F1ECE6] rounded-xl border border-[#E7DFD6]">
                       {timesByDay[single].map((t) =>
@@ -598,14 +696,14 @@ export const CalendarPage: React.FC<{ onLoggedOut: () => void }> = ({ onLoggedOu
                           <li key={`b${t.item.id}`} className="flex items-start justify-between gap-3 px-3.5 py-2.5">
                             <div className="min-w-0">
                               <p className="text-sm font-medium tabular-nums">
-                                {timeLabel(t.start)}–{timeLabel(t.end)} <span className="text-xs font-normal text-[#6A5F56]">· blocked</span>
+                                {timeLabel(t.start)}–{timeLabel(t.end)} <span className="text-xs font-normal text-[#6A5F56]">· booked by you</span>
                               </p>
                               {t.item.note && <p className="text-xs text-[#6A5F56] break-words">{t.item.note}</p>}
                             </div>
                             <button
                               onClick={() => void removeBlock(t.item)}
                               disabled={removing === t.item.id}
-                              aria-label={`Remove the block ${timeLabel(t.start)} to ${timeLabel(t.end)}`}
+                              aria-label={`Free ${timeLabel(t.start)} to ${timeLabel(t.end)} again`}
                               title="Free this time again"
                               className="shrink-0 w-8 h-8 rounded-full flex items-center justify-center text-[#6A5F56] hover:bg-[#F4EFEA] hover:text-[#B42318] disabled:opacity-40"
                             >
@@ -619,9 +717,12 @@ export const CalendarPage: React.FC<{ onLoggedOut: () => void }> = ({ onLoggedOu
                     <p className="text-sm text-[#A39689]">None yet: every time is free{singleDay?.status === 'booked' ? ' (but the day is fully booked)' : ''}.</p>
                   )}
 
-                  <form onSubmit={addBlock} className="mt-3 rounded-xl bg-[#FAF7F2] p-3" aria-label="Block a time">
-                    <p className="text-xs font-medium text-[#5A4D42]">Block a time (e.g. a booking made by phone)</p>
-                    <div className="mt-2 grid grid-cols-2 gap-2">
+                  <details className="mt-3 rounded-xl bg-[#FAF7F2] p-3 group">
+                    <summary className="cursor-pointer text-xs font-medium text-[#5A4D42] marker:text-[#9E7D53]">
+                      Add a time with a note, or one not on the hour (e.g. 7:30–10:00)
+                    </summary>
+                  <form onSubmit={addBlock} className="mt-2" aria-label="Book a time">
+                    <div className="grid grid-cols-2 gap-2">
                       <label className="text-[11px] text-[#6A5F56]">
                         From
                         <input
@@ -673,10 +774,45 @@ export const CalendarPage: React.FC<{ onLoggedOut: () => void }> = ({ onLoggedOu
                       disabled={blockSaving}
                       className="mt-2.5 inline-flex items-center gap-1.5 rounded-full bg-[#1D1714] px-4 py-2 text-xs font-semibold uppercase tracking-[0.12em] text-white hover:bg-[#3A322C] disabled:opacity-40"
                     >
-                      <Clock className="w-3.5 h-3.5" aria-hidden /> {blockSaving ? 'Saving…' : 'Block time'}
+                      <Clock className="w-3.5 h-3.5" aria-hidden /> {blockSaving ? 'Saving…' : 'Mark as booked'}
                     </button>
                   </form>
+                  </details>
                 </section>
+              )}
+
+              {single && singleDay && (
+                <div className="mt-5">
+                  <label htmlFor="day-note" className="block text-xs uppercase tracking-[0.12em] text-[#9E7D53] mb-2">
+                    Team note (never shown to customers)
+                  </label>
+                  <textarea
+                    id="day-note"
+                    rows={3}
+                    maxLength={500}
+                    value={note}
+                    onChange={(e) => {
+                      setNote(e.target.value);
+                      setNoteState('idle');
+                    }}
+                    placeholder="e.g. Priya's wedding, ready by 7 am"
+                    className="w-full rounded-xl border border-[#D9D0C5] bg-white p-3 text-sm outline-none focus:border-[#9E7D53] focus:ring-2 focus:ring-[#C5A880]/40"
+                  />
+                  <div className="mt-2 flex items-center gap-3">
+                    <button
+                      onClick={saveNote}
+                      disabled={noteState === 'saving' || note.trim() === savedNote}
+                      className="rounded-full bg-[#1D1714] px-5 py-2 text-xs font-semibold uppercase tracking-[0.12em] text-white hover:bg-[#3A322C] disabled:opacity-40"
+                    >
+                      {noteState === 'saving' ? 'Saving…' : 'Save note'}
+                    </button>
+                    {noteState === 'saved' && (
+                      <span className="text-xs text-[#1F7A45]" role="status">
+                        Saved
+                      </span>
+                    )}
+                  </div>
+                </div>
               )}
 
               {single && (

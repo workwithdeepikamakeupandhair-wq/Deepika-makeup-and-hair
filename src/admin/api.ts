@@ -86,6 +86,9 @@ export const api = {
   addTimeBlock: (date: string, start: string, end: string, note?: string | null) =>
     request<{ block: TimeBlock }>('/availability/blocks', { method: 'POST', body: JSON.stringify({ date, start, end, note: note || null }) }).then((d) => d.block),
   removeTimeBlock: (id: string) => request<{ ok: true }>(`/availability/blocks/${id}`, { method: 'DELETE' }),
+  /** Frees a time on a day, cutting back any blocks that cover it. */
+  freeTime: (date: string, start: string, end: string) =>
+    request<{ ok: true }>(`/availability/blocks?${new URLSearchParams({ date, start, end })}`, { method: 'DELETE' }),
   settings: () => request<{ settings: BookingSettings }>('/settings').then((d) => d.settings),
   saveSettings: (settings: BookingSettings) =>
     request<{ settings: BookingSettings }>('/settings', { method: 'PUT', body: JSON.stringify(settings) }).then((d) => d.settings),

@@ -10,6 +10,7 @@
  * Dates are plain calendar dates (YYYY-MM-DD), so no time zone can shift them; "today" is today in Atlanta. Times are
  * Atlanta clock times ("08:00").
  */
+import type { PoolClient } from 'pg';
 import type { AvailabilityDay, AvailabilityStatus, CalendarLead } from '../src/data/availability.js';
 import { timeLabel, type Artist, type BookingStatus, type CalendarAppointment, type TimeBlock } from '../src/data/bookingFlow.js';
 import { BUSINESS_INFO as B } from '../src/data/portfolioData.js';
@@ -82,10 +83,11 @@ const MAX_CHECK_DAYS = 62;
 const NEARBY_DAYS = 7;
 
 /**
- * The `check_availability` tool: one day gives its status; a range lists every day as open, few slots left or fully
- * booked (open = marked Free or not marked). Past days are skipped.
+ * The `check_availability` tool: one day gives its status and the times a booking can still start; a range lists every
+ * day as open, few slots left or fully booked (open = marked Free or not marked). Past days are skipped. `except`
+ * leaves out the customer's own booking.
  */
-export async function checkAvailabilityForAssistant(startDate: string, endDate: string) {
+export async function checkAvailabilityForAssistant(startDate: string, endDate: string, except: { phone?: string } = {}) {
   if (!pool) return { ok: false, error: `The calendar can't be read right now. Tell the customer ${B.artist} will confirm availability personally.` };
   if (!isIsoDate(startDate) || !isIsoDate(endDate)) return { ok: false, error: 'Both dates must be real dates written as YYYY-MM-DD.' };
   let [start, end] = startDate <= endDate ? [startDate, endDate] : [endDate, startDate];
@@ -101,7 +103,18 @@ export async function checkAvailabilityForAssistant(startDate: string, endDate: 
     const around = await marksBetween(from, addDays(start, NEARBY_DAYS));
     const status = around.get(start);
     const result = { ok: true, date: start, weekday: weekday(start), status: status ? FOR_ASSISTANT[status] : 'not_marked' };
-    if (status !== 'booked') return result;
+    if (status !== 'booked') {
+      // The hours still free that day, so a customer asking "which times are free?" gets a real answer
+      const check = await checkTime(start, '12:00', except);
+      const free = freeStartTimes(check.free);
+      return {
+        ...result,
+        free_start_times: free,
+        note: free.length
+          ? 'A booking can start at any whole hour in free_start_times. Ask the customer what time they want, then check that time.'
+          : 'Every time that day is already taken: say so kindly and offer to check another date.',
+      };
+    }
     const nearby: string[] = [];
     for (let distance = 1; distance <= NEARBY_DAYS; distance++) {
       for (const day of [addDays(start, -distance), addDays(start, distance)]) {
@@ -192,10 +205,27 @@ async function busyTimes(date: string, lengthMinutes: number, except: { phone?: 
   ];
 }
 
-/** Other start times suggested when the requested one is taken: within this many hours of it, in this window. */
-const SUGGEST_WITHIN_HOURS = 4;
-const SUGGEST_FROM = 4 * 60;
-const SUGGEST_UNTIL = 21 * 60;
+/** Start times the assistant suggests (and the dashboard's hour buttons show): whole hours from 4 AM to 9 PM. */
+export const DAY_FROM_HOUR = 4;
+export const DAY_UNTIL_HOUR = 21;
+const SUGGEST_FROM = DAY_FROM_HOUR * 60;
+const SUGGEST_UNTIL = DAY_UNTIL_HOUR * 60;
+
+/** The whole hours a booking can still start at, as ranges: ["5:00 AM–7:00 AM", "11:00 AM–9:00 PM"]. */
+function freeStartTimes(free: (t: number) => boolean): string[] {
+  const ranges: string[] = [];
+  let first: number | null = null;
+  for (let t = SUGGEST_FROM; t <= SUGGEST_UNTIL + 60; t += 60) {
+    if (t <= SUGGEST_UNTIL && free(t)) {
+      first ??= t;
+    } else if (first !== null) {
+      const last = t - 60;
+      ranges.push(first === last ? timeLabel(fromMinutes(first)) : `${timeLabel(fromMinutes(first))}–${timeLabel(fromMinutes(last))}`);
+      first = null;
+    }
+  }
+  return ranges;
+}
 
 /**
  * Whether `time` on `date` is free for a booking: the day isn't fully booked and nothing else takes any part of the
@@ -231,17 +261,19 @@ export async function checkTimeForAssistant(date: string, time: string, except: 
 
   const inWindow = (t: number) => t >= SUGGEST_FROM && t <= SUGGEST_UNTIL;
   const option = (t: number) => (inWindow(t) ? { time: timeLabel(fromMinutes(t)), status: check.free(t) ? 'open' : 'booked' } : null);
+  // The nearest other free times that day, closest first (searching the whole day if the hours around are busy)
   const others: string[] = [];
-  for (let hours = 2; hours <= SUGGEST_WITHIN_HOURS && others.length < 3; hours++) {
-    for (const t of [minutes - hours * 60, minutes + hours * 60]) if (inWindow(t) && check.free(t) && others.length < 3) others.push(timeLabel(fromMinutes(t)));
+  for (let hours = 2; hours <= DAY_UNTIL_HOUR - DAY_FROM_HOUR && others.length < 4; hours++) {
+    for (const t of [minutes - hours * 60, minutes + hours * 60]) if (inWindow(t) && check.free(t) && others.length < 4) others.push(timeLabel(fromMinutes(t)));
   }
   return {
     ...base,
     time_status: 'booked',
     one_hour_earlier: option(minutes - 60),
     one_hour_later: option(minutes + 60),
-    other_open_times: others,
-    note: 'Offer only times listed here as open. If none is open, offer to check another date.',
+    nearest_free_times: others,
+    free_start_times: freeStartTimes(check.free),
+    note: 'Offer only times listed here as open or free: one hour earlier or later first, then the nearest free times. If none is free, offer to check another date.',
   };
 }
 
@@ -300,18 +332,65 @@ export function checkAvailabilityTool(log: string, customerPhone?: string, custo
       }
       console.log(`${log}: checked the calendar for ${start}${end !== start ? ` to ${end}` : ''}${time ? ` at ${time}` : ''}`);
       if (time && (!end || end === start)) return checkTimeForAssistant(start, time, { phone: customerPhone });
-      return checkAvailabilityForAssistant(start, end || start);
+      return checkAvailabilityForAssistant(start, end || start, { phone: customerPhone });
     },
   };
 }
 
-/** The team marks a time as taken on one day. */
-export async function addTimeBlock(date: string, start: string, end: string, note: string | null, userId: string): Promise<string> {
-  const { rows } = await getDb().query<{ id: string }>(
-    `INSERT INTO calendar_blocks (day, start_time, end_time, note, created_by) VALUES ($1, $2, $3, $4, $5) RETURNING id::text`,
-    [date, start, end, note, userId],
-  );
-  return rows[0].id;
+/** Runs `work` in one database transaction. */
+async function inTransaction<T>(work: (db: PoolClient) => Promise<T>): Promise<T> {
+  const client = await getDb().connect();
+  try {
+    await client.query('BEGIN');
+    const result = await work(client);
+    await client.query('COMMIT');
+    return result;
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+const BLOCK_RETURNING = `id::text, to_char(day, 'YYYY-MM-DD') AS date, to_char(start_time, 'HH24:MI') AS start, to_char(end_time, 'HH24:MI') AS "end", note`;
+
+/**
+ * The team marks a time as taken on one day. Blocks with the same note that overlap or touch it become one block
+ * (tapping 8, 9 and 10 AM gives one 8–11 AM block).
+ */
+export async function addTimeBlock(date: string, start: string, end: string, note: string | null, userId: string): Promise<TimeBlock> {
+  return inTransaction(async (db) => {
+    const { rows: joined } = await db.query<TimeBlock>(
+      `DELETE FROM calendar_blocks WHERE day = $1 AND start_time <= $3 AND end_time >= $2 AND coalesce(note, '') = coalesce($4, '')
+       RETURNING ${BLOCK_RETURNING}`,
+      [date, start, end, note],
+    );
+    const from = [start, ...joined.map((b) => b.start)].sort()[0];
+    const to = [end, ...joined.map((b) => b.end)].sort().at(-1)!;
+    const { rows } = await db.query<TimeBlock>(
+      `INSERT INTO calendar_blocks (day, start_time, end_time, note, created_by) VALUES ($1, $2, $3, $4, $5) RETURNING ${BLOCK_RETURNING}`,
+      [date, from, to, note, userId],
+    );
+    return rows[0];
+  });
+}
+
+/** Frees a time on one day: blocks inside it go, blocks that stick out are cut back (one may split in two). */
+export async function freeTimeRange(date: string, start: string, end: string, userId: string): Promise<number> {
+  return inTransaction(async (db) => {
+    const { rows } = await db.query<TimeBlock>(
+      `DELETE FROM calendar_blocks WHERE day = $1 AND start_time < $3 AND end_time > $2 RETURNING ${BLOCK_RETURNING}`,
+      [date, start, end],
+    );
+    for (const b of rows) {
+      const keep = [b.start < start && [b.start, start], b.end > end && [end, b.end]].filter((x): x is string[] => Boolean(x));
+      for (const [s, e] of keep) {
+        await db.query(`INSERT INTO calendar_blocks (day, start_time, end_time, note, created_by) VALUES ($1, $2, $3, $4, $5)`, [date, s, e, b.note, userId]);
+      }
+    }
+    return rows.length;
+  });
 }
 
 export async function removeTimeBlock(id: string): Promise<boolean> {

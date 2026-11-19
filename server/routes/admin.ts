@@ -6,7 +6,7 @@ import { AVAILABILITY_STATUS_IDS, MAX_DAYS_PER_CHANGE, type AvailabilityStatus }
 import { BOOKING_STATUS_IDS } from '../../src/data/bookingFlow.js';
 import { LEAD_SOURCES, LEAD_STAGE_IDS } from '../../src/data/leads.js';
 import { DUMMY_HASH, endSession, requireAdmin, sessionUser, startSession, verifyPassword } from '../auth.js';
-import { addTimeBlock, calendarBetween, daysInRange, isIsoDate, markDays, removeTimeBlock, toMinutes, fromMinutes } from '../availability.js';
+import { addTimeBlock, calendarBetween, daysInRange, freeTimeRange, isIsoDate, markDays, removeTimeBlock, toMinutes, fromMinutes } from '../availability.js';
 import { getDb } from '../db.js';
 import { asyncHandler, cleanString, HttpError, rateLimit } from '../http.js';
 import { LEAD_COLUMNS, LEAD_FROM, toLead, type LeadRow } from '../leads.js';
@@ -317,10 +317,23 @@ adminRouter.post(
     if (start === null || end === null) throw new HttpError(400, 'Enter a start and an end time.');
     if (end <= start) throw new HttpError(400, 'The end time must be after the start time.');
     const note = cleanString(body.note, 'Note', 200);
-    const block = { date, start: fromMinutes(start), end: fromMinutes(end), note };
-    const id = await addTimeBlock(date, block.start, block.end, note, req.adminUser!.id);
-    console.log(`[admin] ${req.adminUser!.name} blocked ${block.start}–${block.end} on ${date}`);
-    res.json({ block: { id, ...block } });
+    const block = await addTimeBlock(date, fromMinutes(start), fromMinutes(end), note, req.adminUser!.id);
+    console.log(`[admin] ${req.adminUser!.name} blocked ${fromMinutes(start)}–${fromMinutes(end)} on ${date}`);
+    res.json({ block });
+  }),
+);
+
+/** DELETE /api/admin/availability/blocks?date=2026-11-20&start=09:00&end=10:00 → frees that time (cutting blocks). */
+adminRouter.delete(
+  '/availability/blocks',
+  asyncHandler(async (req, res) => {
+    const date = typeof req.query.date === 'string' ? req.query.date : '';
+    if (!isIsoDate(date)) throw new HttpError(400, 'Choose a valid day.');
+    const [start, end] = [toMinutes(String(req.query.start ?? '')), toMinutes(String(req.query.end ?? ''))];
+    if (start === null || end === null || end <= start) throw new HttpError(400, 'Choose a valid time.');
+    const changed = await freeTimeRange(date, fromMinutes(start), fromMinutes(end), req.adminUser!.id);
+    console.log(`[admin] ${req.adminUser!.name} freed ${fromMinutes(start)}–${fromMinutes(end)} on ${date}`);
+    res.json({ ok: true, changed });
   }),
 );
 
