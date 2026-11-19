@@ -3,7 +3,7 @@
  */
 import type { AvailabilityDay, AvailabilityStatus, CalendarLead } from '../data/availability';
 import type { BookingDetails, BookingSettings, CalendarAppointment, TimeBlock } from '../data/bookingFlow';
-import type { AdminUser, Lead } from '../data/leads';
+import type { AdminUser, ChatLine, Lead } from '../data/leads';
 
 /** Thrown when the session has expired or the user logged out in another tab. */
 export class NotLoggedIn extends Error {}
@@ -86,6 +86,8 @@ export const api = {
   addTimeBlock: (date: string, start: string, end: string, note?: string | null) =>
     request<{ block: TimeBlock }>('/availability/blocks', { method: 'POST', body: JSON.stringify({ date, start, end, note: note || null }) }).then((d) => d.block),
   removeTimeBlock: (id: string) => request<{ ok: true }>(`/availability/blocks/${id}`, { method: 'DELETE' }),
+  /** The lead's whole WhatsApp chat with Pooja, oldest first (`more`: older messages weren't included). */
+  chat: (leadId: string) => request<{ messages: ChatLine[]; more: boolean }>(`/leads/${leadId}/chat`),
   /** Frees a time on a day, cutting back any blocks that cover it. */
   freeTime: (date: string, start: string, end: string) =>
     request<{ ok: true }>(`/availability/blocks?${new URLSearchParams({ date, start, end })}`, { method: 'DELETE' }),

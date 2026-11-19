@@ -66,6 +66,15 @@ export interface Lead {
   eventTime: string | null;
 }
 
+/** One message of a lead's WhatsApp chat with Pooja (the assistant), as the dashboard shows it. */
+export interface ChatLine {
+  /** customer = their message; assistant = Pooja's reply, or a message sent from the dashboard */
+  role: 'customer' | 'assistant';
+  text: string;
+  /** ISO time it was saved */
+  at: string;
+}
+
 export interface AdminUser {
   id: string;
   name: string;

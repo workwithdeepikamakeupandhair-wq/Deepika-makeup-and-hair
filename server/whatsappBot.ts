@@ -340,19 +340,14 @@ async function saveAdLead(waId: string, chat: ChatInfo, referral: Referral, sour
 }
 
 /**
- * Own number: nobody reads this chat, so asking for Deepika puts the customer in the leads dashboard (reason and
- * recent messages in "What they told us") for her to contact. Adds to the customer's open WhatsApp lead if they have
- * one. Returns the lead number, or null without a database.
+ * Own number: nobody reads this chat, so asking for Deepika puts the customer in the leads dashboard for her to
+ * contact, with a one-line note (the lead's panel shows the whole chat). Adds to the customer's open WhatsApp lead if
+ * they have one. Returns the lead number, or null without a database.
  */
-async function saveHandoffLead(waId: string, chat: ChatInfo, messages: ChatMessage[], reason: string): Promise<string | null> {
+async function saveHandoffLead(waId: string, chat: ChatInfo, reason: string): Promise<string | null> {
   if (!pool) return null;
   const phone = `+${waId}`;
-  const recent = messages
-    .filter((m) => m.role === 'user' && m.content !== TALK_TO_DEEPIKA)
-    .slice(-4)
-    .map((m) => `- ${m.content.slice(0, 300)}`)
-    .join('\n');
-  const note = `Asked to talk to ${B.artist} on ${todayInAtlanta().iso}${reason ? ` (${reason})` : ''}.${recent ? `\nRecent messages to the assistant:\n${recent}` : ''}`;
+  const note = `Asked to talk to ${B.artist} on ${todayInAtlanta().iso}${reason ? ` (${reason})` : ''}.`;
   const db = getDb();
   const open = await db.query<{ id: string }>(
     `SELECT id FROM bookings WHERE channel = 'whatsapp' AND phone = $1 AND created_at > now() - interval '30 days'
@@ -516,7 +511,7 @@ function toolsFor(waId: string, chat: ChatInfo, messages: ChatMessage[], turn: T
         const reason = text(args.reason, 200);
         console.log(`${LOG} ${who(waId)} handed over to Deepika (${reason || 'no reason given'})`);
         if (SHARED_NUMBER) return { ok: true, note: `${B.artist} will reply personally in this chat. Tell the customer that, briefly.` };
-        const lead = await saveHandoffLead(waId, chat, messages, reason).catch((err) => {
+        const lead = await saveHandoffLead(waId, chat, reason).catch((err) => {
           console.error(`${LOG} could not save the hand-over for ${who(waId)}:`, err instanceof Error ? err.message : err);
           return null;
         });
@@ -783,12 +778,7 @@ async function handOver(waId: string, chat: ChatInfo, transport: WhatsAppTranspo
   if (SHARED_NUMBER) {
     await pauseBot(waId);
   } else {
-    const lead = await chats
-      .conversation(waId, MAX_HISTORY)
-      .then(({ history, waiting }) =>
-        saveHandoffLead(waId, chat, [...history, ...waiting.map((m) => ({ role: 'user' as const, content: m.content }))], 'tapped "Talk to Deepika"'),
-      )
-      .catch((err) => {
+    const lead = await saveHandoffLead(waId, chat, 'tapped "Talk to Deepika"').catch((err) => {
         console.error(`${LOG} could not save the hand-over for ${who(waId)}:`, err instanceof Error ? err.message : err);
         return null;
       });

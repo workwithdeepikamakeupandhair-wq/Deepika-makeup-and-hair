@@ -181,9 +181,9 @@ are in `payment_proofs`.
   of a conversation carries three buttons: *Book appointment*, *Our services* and *Talk to Deepika*. Twilio needs
   approved content templates for buttons, so there the replies are plain text and customers just type.
 - **Talk to Deepika:** the button, or asking for her in words, hands the customer over.
-  - *Own number:* they're saved as a lead in the dashboard (channel WhatsApp). The lead's "What they told us" holds the
-    reason and their recent messages, and asking again adds to the same lead. They also get Deepika's own WhatsApp and
-    phone, and the bot keeps answering if they ask more.
+  - *Own number:* they're saved as a lead in the dashboard (channel WhatsApp), with a one-line note of the reason, and
+    asking again adds to the same lead. Every WhatsApp lead's panel shows the whole chat with Pooja (latest 500
+    messages). They also get Deepika's own WhatsApp and phone, and the bot keeps answering if they ask more.
   - *Coexistence:* the bot says Deepika will reply here and stays quiet in that chat for
     `WHATSAPP_HUMAN_TAKEOVER_HOURS` (default 12).
 - **Payment screenshots:** see step 8 above. A photo or PDF from a customer whose booking waits for the advance is

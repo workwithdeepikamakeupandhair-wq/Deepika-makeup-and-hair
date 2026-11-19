@@ -8,6 +8,7 @@ import { timeLabel } from '../data/bookingFlow';
 import type { AdminUser, Lead } from '../data/leads';
 import { WhatsAppIcon } from '../components/WhatsAppIcon';
 import { BookingPanel } from './BookingPanel';
+import { ChatTranscript } from './ChatTranscript';
 import { AssigneeSelect, SourcePill, StageSelect } from './controls';
 import { channelLabel, eventDateLabel, fullDateTime, phoneDigits } from './format';
 
@@ -133,11 +134,16 @@ export const LeadDrawer: React.FC<Props> = ({ lead, users, onClose, onUpdate, on
             <Row label="Last change">{fullDateTime(lead.updatedAt)}</Row>
           </dl>
 
-          {lead.notes && (
-            <section>
-              <h3 className="text-xs uppercase tracking-[0.12em] text-[#9E7D53] mb-2">What they told us</h3>
-              <p className="whitespace-pre-wrap rounded-2xl border border-[#E7DFD6] bg-white p-4 text-sm text-[#1D1714] leading-relaxed">{lead.notes}</p>
-            </section>
+          {/* WhatsApp leads: the whole chat with Pooja. Others (website form, ad forms): what they wrote. */}
+          {lead.channel === 'whatsapp' ? (
+            <ChatTranscript leadId={lead.id} fallbackNotes={lead.notes} onLoggedOut={onLoggedOut} />
+          ) : (
+            lead.notes && (
+              <section>
+                <h3 className="text-xs uppercase tracking-[0.12em] text-[#9E7D53] mb-2">What they told us</h3>
+                <p className="whitespace-pre-wrap rounded-2xl border border-[#E7DFD6] bg-white p-4 text-sm text-[#1D1714] leading-relaxed">{lead.notes}</p>
+              </section>
+            )
           )}
 
           <section>

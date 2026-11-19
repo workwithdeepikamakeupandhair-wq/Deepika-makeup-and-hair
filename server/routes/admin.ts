@@ -130,6 +130,35 @@ async function leadById(id: string) {
   return rows[0] ? toLead(rows[0]) : null;
 }
 
+/** The most chat messages one lead panel shows (the newest ones). */
+const CHAT_LIMIT = 500;
+
+/** GET /api/admin/leads/:id/chat → the lead's whole WhatsApp conversation with Pooja, oldest first. */
+adminRouter.get(
+  '/leads/:id/chat',
+  asyncHandler(async (req, res) => {
+    const id = leadId(req.params.id);
+    const db = getDb();
+    const lead = await db.query<{ phone: string; channel: string | null }>('SELECT phone, channel FROM bookings WHERE id = $1', [id]);
+    if (!lead.rows[0]) throw new HttpError(404, 'Lead not found.');
+    if (lead.rows[0].channel !== 'whatsapp') return res.json({ messages: [], more: false });
+    // The newest messages (incl. any still waiting for a reply), then put back in conversation order
+    const { rows } = await db.query<{ role: 'user' | 'assistant'; content: string; created_at: Date }>(
+      `SELECT role, content, created_at FROM (
+         SELECT id, role, content, created_at, turn_at FROM whatsapp_messages WHERE wa_id = $1
+          ORDER BY turn_at DESC NULLS FIRST, id DESC LIMIT ${CHAT_LIMIT + 1}
+       ) m
+       ORDER BY turn_at ASC NULLS LAST, id ASC`,
+      [lead.rows[0].phone.replace(/\D/g, '')],
+    );
+    const more = rows.length > CHAT_LIMIT;
+    res.json({
+      messages: (more ? rows.slice(1) : rows).map((r) => ({ role: r.role === 'user' ? 'customer' : 'assistant', text: r.content, at: r.created_at.toISOString() })),
+      more,
+    });
+  }),
+);
+
 /** GET /api/admin/leads/:id/booking → the lead's WhatsApp booking: quote, artist, payment screenshots, calendar check. */
 adminRouter.get(
   '/leads/:id/booking',
