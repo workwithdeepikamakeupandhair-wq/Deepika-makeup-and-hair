@@ -130,7 +130,7 @@ interface MetaMessage {
   type: string;
   referral?: Referral;
   text?: { body?: string };
-  button?: { text?: string };
+  button?: { text?: string; payload?: string };
   interactive?: { button_reply?: { id?: string; title?: string }; list_reply?: { id?: string; title?: string } };
   image?: { caption?: string; id?: string };
   video?: { caption?: string; id?: string };
@@ -177,6 +177,8 @@ function toInbound(m: MetaMessage, profileName?: string): InboundMessage {
     text,
     media: MEDIA_TYPES[m.type],
     fetchMedia: mediaId ? () => metaMedia(mediaId) : undefined,
+    // A tapped template button (e.g. Approve under a payment screenshot) carries its hidden payload
+    buttonPayload: m.type === 'button' ? m.button?.payload?.trim() || undefined : undefined,
     wantsDeepika: m.type === 'interactive' && m.interactive?.button_reply?.id === 'deepika',
     referral: m.referral,
   };

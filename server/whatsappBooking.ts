@@ -526,16 +526,20 @@ export async function bookingForPaymentProof(waId: string): Promise<{ id: string
  * Keeps a payment screenshot for the team. The first one moves the booking to 'payment_review' (returns true); more
  * screenshots are added to it. Nothing is marked as paid: only the team's approval confirms the booking.
  */
-export async function savePaymentProof(bookingId: string, data: Buffer, contentType: string): Promise<boolean> {
+export async function savePaymentProof(bookingId: string, data: Buffer, contentType: string): Promise<{ first: boolean; proofId: string }> {
   const db = getDb();
-  await db.query('INSERT INTO payment_proofs (booking_id, content_type, data) VALUES ($1, $2, $3)', [bookingId, contentType, data]);
+  const { rows } = await db.query<{ id: string }>('INSERT INTO payment_proofs (booking_id, content_type, data) VALUES ($1, $2, $3) RETURNING id::text', [
+    bookingId,
+    contentType,
+    data,
+  ]);
   const { rowCount } = await db.query(
     `UPDATE bookings SET booking_status = 'payment_review', payment_submitted_at = now(), updated_at = now()
       WHERE id = $1 AND booking_status = 'awaiting_payment'`,
     [bookingId],
   );
   console.log(`[whatsapp] booking #${bookingId}: payment screenshot received (${Math.round(data.length / 1024)} KB)`);
-  return Boolean(rowCount);
+  return { first: Boolean(rowCount), proofId: rows[0].id };
 }
 
 // ---------- The team (dashboard) ----------
@@ -603,8 +607,9 @@ export class BookingActionError extends Error {}
 /**
  * The team approves a booking after checking the payment: it becomes confirmed (and the lead converted), its time
  * stays taken on the calendar, and the confirmation message for the customer comes back, with their WhatsApp number.
+ * `userId` is the dashboard user; null when approved on WhatsApp (an approval number in Settings).
  */
-export async function approveBooking(id: string, userId: string): Promise<{ waId: string | null; message: string }> {
+export async function approveBooking(id: string, userId: string | null): Promise<{ waId: string | null; message: string; fullName: string }> {
   const r = await adminRow(id);
   if (!r) throw new BookingActionError('Lead not found.');
   const d = toDraft(r);
@@ -615,11 +620,11 @@ export async function approveBooking(id: string, userId: string): Promise<{ waId
     `UPDATE bookings SET booking_status = 'confirmed', status = 'converted', confirmed_at = now(), confirmed_by = $2, updated_at = now() WHERE id = $1`,
     [id, userId],
   );
-  return { waId: r.channel === 'whatsapp' ? r.phone.replace(/\D/g, '') : null, message: bookingConfirmedMessage(summaryOf(d)) };
+  return { waId: r.channel === 'whatsapp' ? r.phone.replace(/\D/g, '') : null, message: bookingConfirmedMessage(summaryOf(d)), fullName: d.fullName };
 }
 
 /** The team couldn't match the screenshot to a payment: the booking waits for the advance again (with a fresh hold). */
-export async function reopenPayment(id: string): Promise<{ waId: string | null; advance: number | null }> {
+export async function reopenPayment(id: string): Promise<{ waId: string | null; advance: number | null; fullName: string }> {
   const r = await adminRow(id);
   if (!r) throw new BookingActionError('Lead not found.');
   if (r.booking_status !== 'payment_review') throw new BookingActionError('Only a booking whose payment is being verified can be sent back.');
@@ -627,7 +632,7 @@ export async function reopenPayment(id: string): Promise<{ waId: string | null; 
     `UPDATE bookings SET booking_status = 'awaiting_payment', payment_requested_at = now(), payment_submitted_at = NULL, updated_at = now() WHERE id = $1`,
     [id],
   );
-  return { waId: r.channel === 'whatsapp' ? r.phone.replace(/\D/g, '') : null, advance: r.advance_amount };
+  return { waId: r.channel === 'whatsapp' ? r.phone.replace(/\D/g, '') : null, advance: r.advance_amount, fullName: r.full_name };
 }
 
 /** A payment screenshot, for the dashboard. */

@@ -15,11 +15,23 @@ function normalize(value: unknown): BookingSettings {
   const v = (value && typeof value === 'object' ? value : {}) as Partial<Record<keyof BookingSettings, unknown>>;
   const hours = Number(v.appointmentHours);
   const prefixes = Array.isArray(v.atlantaZipPrefixes) ? v.atlantaZipPrefixes.filter((p): p is string => typeof p === 'string' && /^\d{3,5}$/.test(p)) : [];
+  const approvers = Array.isArray(v.approverWhatsapp) ? v.approverWhatsapp.filter((p): p is string => typeof p === 'string' && PHONE_RE.test(p)) : [];
   return {
     paymentDetails: typeof v.paymentDetails === 'string' ? v.paymentDetails.trim().slice(0, MAX_PAYMENT_DETAILS) : DEFAULT_BOOKING_SETTINGS.paymentDetails,
     appointmentHours: Number.isFinite(hours) && hours >= 0.5 && hours <= 12 ? hours : DEFAULT_BOOKING_SETTINGS.appointmentHours,
     atlantaZipPrefixes: prefixes.length ? prefixes : DEFAULT_BOOKING_SETTINGS.atlantaZipPrefixes,
+    approverWhatsapp: approvers,
   };
+}
+
+/** An international phone number as WhatsApp uses it: "+" and 8–15 digits. */
+const PHONE_RE = /^\+\d{8,15}$/;
+
+/** "+91 70229 08519", "917022908519" → "+917022908519"; null if it isn't an international number. */
+export function e164(value: string): string | null {
+  const digits = value.replace(/[^\d+]/g, '').replace(/^00/, '+');
+  const withPlus = digits.startsWith('+') ? digits : `+${digits}`;
+  return PHONE_RE.test(withPlus) ? withPlus : null;
 }
 
 export async function getBookingSettings(): Promise<BookingSettings> {
@@ -48,7 +60,24 @@ export function parseBookingSettings(body: unknown): BookingSettings {
   if (!prefixes.length) throw new HttpError(400, 'List at least one Atlanta ZIP code.');
   if (prefixes.length > 300) throw new HttpError(400, 'List at most 300 ZIP codes.');
 
-  return { paymentDetails, appointmentHours: hours, atlantaZipPrefixes: prefixes };
+  // Optional: who approves payments on WhatsApp
+  const rawApprovers = Array.isArray(b.approverWhatsapp) ? b.approverWhatsapp.map(String) : typeof b.approverWhatsapp === 'string' ? b.approverWhatsapp.split(/[,;\n]+/) : [];
+  const approverWhatsapp: string[] = [];
+  for (const raw of rawApprovers.map((r) => r.trim()).filter(Boolean)) {
+    const number = e164(raw);
+    if (!number) throw new HttpError(400, `"${raw.slice(0, 30)}" isn't a full international WhatsApp number (with the country code, e.g. +91 70229 08519).`);
+    if (!approverWhatsapp.includes(number)) approverWhatsapp.push(number);
+  }
+  if (approverWhatsapp.length > 5) throw new HttpError(400, 'List at most 5 approval numbers.');
+
+  return { paymentDetails, appointmentHours: hours, atlantaZipPrefixes: prefixes, approverWhatsapp };
+}
+
+/** A setting other than the booking settings, e.g. the WhatsApp template IDs. */
+export async function getSetting<T extends object>(key: string): Promise<Partial<T>> {
+  if (!pool) return {};
+  const { rows } = await pool.query<{ value: unknown }>('SELECT value FROM settings WHERE key = $1', [key]);
+  return (rows[0]?.value && typeof rows[0].value === 'object' ? rows[0].value : {}) as Partial<T>;
 }
 
 export async function saveBookingSettings(settings: BookingSettings, userId: string) {

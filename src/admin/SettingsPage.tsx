@@ -3,7 +3,7 @@
  * long a booking takes on the calendar, and the ZIP codes of the Atlanta area, where Deepika does the makeup herself.
  */
 import React, { useCallback, useEffect, useState } from 'react';
-import { AlertTriangle, Clock, CreditCard, MapPin, MessageCircle, RefreshCw } from 'lucide-react';
+import { AlertTriangle, Clock, CreditCard, MapPin, MessageCircle, RefreshCw, Smartphone } from 'lucide-react';
 import { DEFAULT_BOOKING_SETTINGS, type BookingSettings } from '../data/bookingFlow';
 import { ADVANCE_PERCENT } from '../data/portfolioData';
 import { api, NotLoggedIn } from './api';
@@ -12,18 +12,23 @@ interface Form {
   paymentDetails: string;
   appointmentHours: string;
   zips: string;
+  approvers: string;
 }
 
 const toForm = (s: BookingSettings): Form => ({
   paymentDetails: s.paymentDetails,
   appointmentHours: String(s.appointmentHours),
   zips: s.atlantaZipPrefixes.join(', '),
+  approvers: (s.approverWhatsapp ?? []).join(', '),
 });
+
+const listOf = (value: string) => value.split(/[,;\n]+/).map((v) => v.trim()).filter(Boolean);
 
 const sameForm = (a: Form, b: Form) =>
   a.paymentDetails.trim() === b.paymentDetails.trim() &&
   Number(a.appointmentHours) === Number(b.appointmentHours) &&
-  a.zips.split(/[\s,;]+/).filter(Boolean).join(',') === b.zips.split(/[\s,;]+/).filter(Boolean).join(',');
+  a.zips.split(/[\s,;]+/).filter(Boolean).join(',') === b.zips.split(/[\s,;]+/).filter(Boolean).join(',') &&
+  listOf(a.approvers).join(',') === listOf(b.approvers).join(',');
 
 const inputClass =
   'w-full rounded-xl border border-[#D9D0C5] bg-white p-3 text-sm outline-none focus:border-[#9E7D53] focus:ring-2 focus:ring-[#C5A880]/40';
@@ -83,6 +88,7 @@ export const SettingsPage: React.FC<{ onLoggedOut: () => void }> = ({ onLoggedOu
         paymentDetails: form.paymentDetails.trim(),
         appointmentHours: Number(form.appointmentHours),
         atlantaZipPrefixes: form.zips.split(/[\s,;]+/).filter(Boolean),
+        approverWhatsapp: listOf(form.approvers),
       });
       const f = toForm(next);
       setSaved(f);
@@ -153,9 +159,27 @@ export const SettingsPage: React.FC<{ onLoggedOut: () => void }> = ({ onLoggedOu
           <p className="flex gap-2 rounded-xl bg-[#F6EFE7] px-3.5 py-3 text-xs leading-relaxed text-[#5A4D42]">
             <MessageCircle className="w-3.5 h-3.5 mt-0.5 shrink-0 text-[#25D366]" aria-hidden />
             <span>
-              Pooja then asks for the payment screenshot. Nothing counts as paid until you check the screenshot and approve the booking in Leads.
+              Pooja then asks for the payment screenshot. Nothing counts as paid until you check the screenshot and approve the booking (in Leads, or on WhatsApp below).
             </span>
           </p>
+        </Card>
+
+        <Card icon={Smartphone} title="Approve payments on WhatsApp" htmlFor="settings-approvers">
+          <p className="text-sm text-[#6A5F56] leading-relaxed">
+            When a customer sends their payment screenshot, these WhatsApp numbers get it from the assistant's number with the booking details and two buttons:{' '}
+            <strong>Approve</strong> (the booking is confirmed and the customer gets the confirmation) or <strong>Not received</strong> (the customer is asked to send it
+            again). Use full international numbers, separated by commas. These numbers talk to the assistant only for approvals, not as customers.
+          </p>
+          <input
+            id="settings-approvers"
+            type="text"
+            inputMode="tel"
+            value={form.approvers}
+            onChange={(e) => change({ approvers: e.target.value })}
+            placeholder="+91 70229 08519"
+            className={`${inputClass} tabular-nums`}
+          />
+          <p className="text-xs text-[#A39689]">Leave empty to approve only here in the dashboard. Up to 5 numbers.</p>
         </Card>
 
         <Card icon={Clock} title="Booking length" htmlFor="settings-hours">

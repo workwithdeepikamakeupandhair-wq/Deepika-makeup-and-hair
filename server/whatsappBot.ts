@@ -26,6 +26,7 @@
 import type { ChatCompletionMessageParam } from 'openai/resources';
 import { SERVICE_NOT_SPECIFIED } from '../src/data/leads.js';
 import { ADVANCE_PERCENT, BUSINESS_INFO as B, WHATSAPP_CONTACTS } from '../src/data/portfolioData.js';
+import { APPROVER_HELP, approverCommand, bookingsToVerify, isApprover, notifyApprovers } from './approvals.js';
 import { retrieve, searchOnlyAnswer, type ChatMessage, type Retrieved } from './assistant.js';
 import { checkAvailabilityTool, todayInAtlanta } from './availability.js';
 import { inBackground } from './background.js';
@@ -35,11 +36,14 @@ import { sourceFromAdUrl } from './leads.js';
 import { buildWhatsAppSystemPrompt, completeChatWithTools, NO_REPLY, openai, OPENAI_MODEL, type ChatTool } from './llm.js';
 import { chatStore as chats, type ChatConnection, type ChatInfo } from './whatsappChats.js';
 import {
+  approveBooking,
+  BookingActionError,
   bookingForPaymentProof,
   currentBooking,
   describeBooking,
   PACKAGE_GUIDE,
   PACKAGE_IDS,
+  reopenPayment,
   requestAdvancePayment,
   saveBookingDetails,
   savePaymentProof,
@@ -49,6 +53,7 @@ import {
   brochureUrl,
   EXTRA_PROOF_MESSAGE,
   PAYMENT_RECEIVED_MESSAGE,
+  paymentNotVerifiedMessage,
   QUOTATIONS,
   QUOTE_OCCASIONS,
   WELCOME_MESSAGE,
@@ -186,6 +191,8 @@ export interface InboundMessage {
   fetchMedia?: () => Promise<{ data: Buffer; contentType: string }>;
   /** They tapped the "Talk to Deepika" button. */
   wantsDeepika?: boolean;
+  /** The hidden id of a template button they tapped, e.g. "approve_105" (approval numbers). */
+  buttonPayload?: string;
   referral?: Referral;
 }
 
@@ -211,7 +218,7 @@ export async function sendToCustomer(waId: string, text: string): Promise<void> 
   if (!make) throw new Error(`WhatsApp via ${kind} isn't set up on this server.`);
   await make(chat?.businessNumber).send(waId, text, false);
   await chats.addReply(waId, text, []);
-  console.log(`${LOG} message from the dashboard sent to ${who(waId)} via ${kind}`);
+  console.log(`${LOG} message sent to ${who(waId)} via ${kind} (a confirmation or follow-up, not a reply)`);
 }
 
 // ---------- Chat state ----------
@@ -837,18 +844,84 @@ async function receivePaymentProof(waId: string, m: InboundMessage, bookingId: s
   if (id === null) return; // delivered before, to another server instance
   transport.markReadAndTyping(m.id);
   let reply: string | null;
+  let saved: { first: boolean; proofId: string; contentType: string } | null = null;
   try {
     const file = await m.fetchMedia!();
     if (!file.data.length || file.data.length > MAX_PROOF_BYTES) throw new Error(`file of ${file.data.length} bytes`);
-    const first = await savePaymentProof(bookingId, file.data, file.contentType);
+    const { first, proofId } = await savePaymentProof(bookingId, file.data, file.contentType);
+    saved = { first, proofId, contentType: file.contentType };
     reply = first ? PAYMENT_RECEIVED_MESSAGE : (await chats.claimMediaAck(waId, EXTRA_PROOF_ACK_EVERY_MS)) ? EXTRA_PROOF_MESSAGE : null;
   } catch (err) {
     console.error(`${LOG} could not keep the payment screenshot from ${who(waId)}:`, err instanceof Error ? err.message : err);
     reply = PROOF_FAILED_REPLY;
   }
-  if (!reply) return;
-  await transport.send(waId, reply, false);
-  await chats.addReply(waId, reply, []);
+  if (reply) {
+    await transport.send(waId, reply, false);
+    await chats.addReply(waId, reply, []);
+  }
+  // The first screenshot goes to the approval numbers (e.g. Deepika's WhatsApp) to approve with a tap
+  if (saved?.first) {
+    await notifyApprovers(bookingId, saved.proofId, saved.contentType, transport.connection.businessNumber).catch((err) =>
+      console.error(`${LOG} could not send booking #${bookingId} for approval:`, err instanceof Error ? err.message : err),
+    );
+  }
+}
+
+/** Sends a customer a message after an approver's tap; false (and logged) if it couldn't be sent. */
+async function messageAfterApproval(waId: string | null, text: string): Promise<boolean> {
+  if (!waId) return false;
+  try {
+    await sendToCustomer(waId, text);
+    return true;
+  } catch (err) {
+    console.error(`${LOG} could not message ${who(waId)} after an approval on WhatsApp:`, err instanceof Error ? err.message : err);
+    return false;
+  }
+}
+
+/**
+ * A message from an approval number (Settings), e.g. Deepika's own WhatsApp: not a customer chat. A tap on Approve or
+ * Not received under a payment screenshot (or "approve 105" typed) does what the dashboard's buttons do, and the
+ * approver gets a short answer. Anything else gets a reminder of how it works.
+ */
+async function handleApprover(transport: WhatsAppTransport, m: InboundMessage) {
+  transport.markReadAndTyping(m.id);
+  const answer = (text: string) => transport.send(m.from, text, false);
+  const command = approverCommand(m.buttonPayload, m.text);
+  if (!command) return answer(APPROVER_HELP);
+
+  let id = command.bookingId;
+  if (!id) {
+    const pending = await bookingsToVerify();
+    if (pending.length !== 1) {
+      return answer(
+        pending.length
+          ? `Which booking? Payments waiting: ${pending.map((p) => `#${p.id} ${p.fullName}`).join(', ')}. Reply *approve 105* or *reject 105* with its number.`
+          : 'There are no payments waiting for approval right now. 😊',
+      );
+    }
+    id = pending[0].id;
+  }
+
+  try {
+    if (command.action === 'approve') {
+      const done = await approveBooking(id, null);
+      console.log(`${LOG} booking #${id} approved on WhatsApp by ${who(m.from)}`);
+      const sent = await messageAfterApproval(done.waId, done.message);
+      return answer(
+        `✅ Booking #${id} for ${done.fullName} is confirmed.${sent ? ' They got the confirmation on WhatsApp.' : " But the confirmation couldn't be sent to them on WhatsApp: please message them directly."}`,
+      );
+    }
+    const reopened = await reopenPayment(id);
+    console.log(`${LOG} booking #${id}: payment not received (said ${who(m.from)} on WhatsApp)`);
+    const sent = await messageAfterApproval(reopened.waId, paymentNotVerifiedMessage(reopened.advance));
+    return answer(
+      `Okay. ${reopened.fullName} (booking #${id}) ${sent ? 'has been asked to send the payment screenshot again.' : "couldn't be messaged on WhatsApp: please contact them directly."}`,
+    );
+  } catch (err) {
+    if (err instanceof BookingActionError) return answer(`Booking #${id}: ${err.message}`);
+    throw err;
+  }
 }
 
 // ---------- Incoming messages ----------
@@ -867,6 +940,8 @@ export function receiveMessage(transport: WhatsAppTransport, m: InboundMessage) 
 
 async function handleMessage(transport: WhatsAppTransport, m: InboundMessage) {
   const waId = m.from;
+  // Deepika's approval number: payment approvals, not a customer chat
+  if (await isApprover(waId).catch(() => false)) return handleApprover(transport, m);
   const ad = m.referral?.source_type === 'ad' ? m.referral : undefined;
   const adSource = ad ? sourceFromAdUrl(ad.source_url) : undefined;
   const chat = await chats.touch(waId, { profileName: m.profileName?.trim().slice(0, 80) || undefined, adSource, connection: transport.connection });

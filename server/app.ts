@@ -7,8 +7,10 @@ import './env.js';
 import express, { type Express, type NextFunction, type Request, type Response } from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
+import { PROOF_PATH, readProofToken } from './approvals.js';
 import { pool } from './db.js';
-import { HttpError } from './http.js';
+import { asyncHandler, HttpError } from './http.js';
+import { paymentProof } from './whatsappBooking.js';
 import { openai, OPENAI_MODEL } from './llm.js';
 import { adminRouter } from './routes/admin.js';
 import { bookingsRouter } from './routes/bookings.js';
@@ -68,6 +70,18 @@ export function createApp({ websiteDir }: AppOptions = {}): Express {
   app.use('/api/bookings', bookingsRouter);
   app.use('/api/chat', chatRouter);
   app.use('/api/admin', adminRouter);
+
+  // A payment screenshot for WhatsApp to show the approver: only through a signed link that expires
+  app.get(
+    `${PROOF_PATH}/:token`,
+    asyncHandler(async (req, res) => {
+      const id = readProofToken(req.params.token);
+      const proof = id ? await paymentProof(id) : null;
+      if (!proof || !/^image\/(jpeg|png)$/i.test(proof.contentType)) throw new HttpError(404, 'Not found');
+      res.set({ 'Content-Type': proof.contentType, 'Cache-Control': 'private, max-age=3600', 'X-Content-Type-Options': 'nosniff', 'X-Robots-Tag': 'noindex' });
+      res.send(proof.data);
+    }),
+  );
 
   app.use('/api', (_req, res) => {
     res.status(404).json({ error: 'Not found' });

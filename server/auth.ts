@@ -50,6 +50,9 @@ export const DUMMY_HASH = `scrypt$${SCRYPT.N}$${SCRYPT.r}$${SCRYPT.p}$${Buffer.a
 
 const sign = (payload: string) => crypto.createHmac('sha256', secret!).update(payload).digest('base64url');
 
+/** Signs something other than a login (e.g. a payment screenshot link) with the same secret, kept apart by `purpose`. */
+export const signWith = (purpose: string, payload: string) => crypto.createHmac('sha256', secret).update(`${purpose}\n${payload}`).digest('base64url');
+
 function createToken(userId: string): string {
   const payload = Buffer.from(JSON.stringify({ uid: userId, exp: Date.now() + SESSION_DAYS * 86_400_000 })).toString('base64url');
   return `${payload}.${sign(payload)}`;

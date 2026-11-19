@@ -152,6 +152,15 @@ advance and the calendar are worked out in code.
    on WhatsApp. **Payment not received — ask again** sends them back to step 8 with a polite message. WhatsApp only
    delivers these within 24 hours of the customer's last message; the panel warns when that window has passed.
 
+**Approving on WhatsApp** (`server/approvals.ts`). The approval numbers in Settings (e.g. Deepika's own WhatsApp) get
+each customer's first payment screenshot from the assistant's number, with the booking details and two buttons:
+**Approve** (same as the dashboard's Approve: confirmed, customer told) and **Not received** (customer asked to send it
+again). Typing `approve 105` / `reject 105` works too. Messages from an approval number are never treated as a customer
+chat. WhatsApp only allows this through a Meta-approved template: `server/scripts/create-approval-template.ts` creates
+it in Twilio (Content API, `twilio/card`), submits it for approval and saves its ID in the `settings` table; run it
+again to see the approval status. The screenshot reaches WhatsApp through a signed link that expires after 14 days
+(`/api/whatsapp/proof/…`). PDF receipts are approved in the dashboard only.
+
 A time is held while the customer is asked to pay (24 hours), while their screenshot is checked, and once confirmed,
 so two customers can't pay for the same time. Only Deepika's own bookings take her time; a senior artist's don't.
 

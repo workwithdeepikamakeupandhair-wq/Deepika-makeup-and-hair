@@ -12,6 +12,7 @@
  */
 import crypto from 'node:crypto';
 import express, { Router, type Request } from 'express';
+import { registerTemplateSender } from '../approvals.js';
 import { inBackground } from '../background.js';
 import { receiveMessage, registerOutboundTransport, who, type InboundMessage, type MediaKind, type WhatsAppTransport } from '../whatsappBot.js';
 
@@ -177,6 +178,19 @@ if (twilioWhatsAppEnabled) {
     if (!from) throw new Error('Which Twilio WhatsApp number to send from is unknown (set TWILIO_WHATSAPP_NUMBER).');
     return transportFor(from, statusCallback);
   });
+  // Approved WhatsApp templates (Twilio Content), e.g. a payment screenshot for Deepika to approve
+  registerTemplateSender(async ({ from, to, contentSid, variables }) => {
+    const sender = from || config.number;
+    if (!sender) throw new Error('Which Twilio WhatsApp number to send from is unknown (set TWILIO_WHATSAPP_NUMBER).');
+    const sent = (await twilioPost(`${config.apiUrl}/2010-04-01/Accounts/${config.accountSid}/Messages.json`, {
+      From: `whatsapp:${sender}`,
+      To: `whatsapp:${to}`,
+      ContentSid: contentSid,
+      ContentVariables: JSON.stringify(variables),
+      ...(statusCallback ? { StatusCallback: statusCallback } : {}),
+    })) as { sid?: string };
+    return sent.sid ?? '';
+  });
 }
 
 /** Photos and files customers send (payment screenshots), downloaded with the account's credentials. */
@@ -222,6 +236,7 @@ function toInbound(p: Form): InboundMessage | null {
     text,
     media: kind === 'sticker' ? undefined : kind,
     fetchMedia: kind && kind !== 'sticker' && mediaUrl ? () => twilioMedia(mediaUrl, p.MediaContentType0) : undefined,
+    buttonPayload: p.ButtonPayload?.trim() || undefined,
     referral: p.ReferralSourceType
       ? {
           source_type: p.ReferralSourceType.toLowerCase(),

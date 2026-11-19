@@ -78,6 +78,11 @@ export interface BookingSettings {
   appointmentHours: number;
   /** ZIP codes (or their first 3–4 digits) of the Atlanta service area, where Deepika does the makeup herself. */
   atlantaZipPrefixes: string[];
+  /**
+   * WhatsApp numbers (international, e.g. "+917022908519") that get each payment screenshot with the booking details
+   * and can approve it there with a tap.
+   */
+  approverWhatsapp: string[];
 }
 
 /**
@@ -88,6 +93,7 @@ export const DEFAULT_BOOKING_SETTINGS: BookingSettings = {
   paymentDetails: '',
   appointmentHours: 2,
   atlantaZipPrefixes: ['300', '301', '302', '303', '311', '399'],
+  approverWhatsapp: [],
 };
 
 /** A time the team marked as taken on one day. */
