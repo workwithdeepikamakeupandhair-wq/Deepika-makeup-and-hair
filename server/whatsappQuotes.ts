@@ -177,7 +177,7 @@ You can make the payment using the details below:
 
 ${paymentDetails}
 
-Once you've completed the payment, kindly share the payment screenshot here. Our team will verify it and confirm your booking.`;
+📸 Once you've completed the payment, kindly share the *payment screenshot* here. Our team will verify it and confirm your booking.`;
 }
 
 /** Sent when the customer's payment screenshot arrives. Nothing is marked as paid until the team checks it. */
