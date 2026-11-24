@@ -1,7 +1,8 @@
 /**
  * Booking settings the team changes in the dashboard (/admin/settings): the payment details Pooja sends with the
- * advance request, the ZIP codes of the Atlanta service area, and how long a booking takes on the calendar.
- * Stored as one row in the `settings` table; until the team saves them, the defaults apply.
+ * advance request, the places of the Atlanta service area, how long a booking takes on the calendar, and the WhatsApp
+ * numbers that approve enquiries and payments. Stored as one row in the `settings` table; until the team saves them,
+ * the defaults apply.
  */
 import { DEFAULT_BOOKING_SETTINGS, type BookingSettings } from '../src/data/bookingFlow.js';
 import { getDb, pool } from './db.js';
@@ -9,17 +10,21 @@ import { HttpError } from './http.js';
 
 const KEY = 'booking';
 const MAX_PAYMENT_DETAILS = 600;
+/** A place name: letters, spaces and a little punctuation ("Peachtree City", "St. Mary's"). */
+const AREA_RE = /^[\p{L}][\p{L} .'’-]{1,59}$/u;
+const MAX_AREAS = 300;
 
 /** Keeps only valid values; anything missing or broken falls back to the default. */
 function normalize(value: unknown): BookingSettings {
   const v = (value && typeof value === 'object' ? value : {}) as Partial<Record<keyof BookingSettings, unknown>>;
   const hours = Number(v.appointmentHours);
-  const prefixes = Array.isArray(v.atlantaZipPrefixes) ? v.atlantaZipPrefixes.filter((p): p is string => typeof p === 'string' && /^\d{3,5}$/.test(p)) : [];
+  // Settings saved before 2026-11-24 have ZIP codes instead of places: those get the default places
+  const areas = Array.isArray(v.atlantaAreas) ? v.atlantaAreas.filter((p): p is string => typeof p === 'string' && AREA_RE.test(p.trim())).map((p) => p.trim()) : [];
   const approvers = Array.isArray(v.approverWhatsapp) ? v.approverWhatsapp.filter((p): p is string => typeof p === 'string' && PHONE_RE.test(p)) : [];
   return {
     paymentDetails: typeof v.paymentDetails === 'string' ? v.paymentDetails.trim().slice(0, MAX_PAYMENT_DETAILS) : DEFAULT_BOOKING_SETTINGS.paymentDetails,
     appointmentHours: Number.isFinite(hours) && hours >= 0.5 && hours <= 12 ? hours : DEFAULT_BOOKING_SETTINGS.appointmentHours,
-    atlantaZipPrefixes: prefixes.length ? prefixes : DEFAULT_BOOKING_SETTINGS.atlantaZipPrefixes,
+    atlantaAreas: areas.length ? areas : DEFAULT_BOOKING_SETTINGS.atlantaAreas,
     approverWhatsapp: approvers,
   };
 }
@@ -52,13 +57,16 @@ export function parseBookingSettings(body: unknown): BookingSettings {
     throw new HttpError(400, 'Booking length must be between 0.5 and 12 hours, in half hours.');
   }
 
-  const raw = Array.isArray(b.atlantaZipPrefixes) ? b.atlantaZipPrefixes : typeof b.atlantaZipPrefixes === 'string' ? b.atlantaZipPrefixes.split(/[\s,;]+/) : null;
-  if (!raw) throw new HttpError(400, 'List the Atlanta ZIP codes.');
-  const prefixes = [...new Set(raw.map((p) => String(p).trim()).filter(Boolean))];
-  const bad = prefixes.filter((p) => !/^\d{3,5}$/.test(p));
-  if (bad.length) throw new HttpError(400, `These aren't ZIP codes or ZIP beginnings (3–5 digits): ${bad.slice(0, 5).join(', ')}`);
-  if (!prefixes.length) throw new HttpError(400, 'List at least one Atlanta ZIP code.');
-  if (prefixes.length > 300) throw new HttpError(400, 'List at most 300 ZIP codes.');
+  const raw = Array.isArray(b.atlantaAreas) ? b.atlantaAreas.map(String) : typeof b.atlantaAreas === 'string' ? b.atlantaAreas.split(/[,;\n]+/) : null;
+  if (!raw) throw new HttpError(400, 'List the places of the Atlanta service area.');
+  const areas: string[] = [];
+  for (const place of raw.map((p) => p.trim().replace(/\s+/g, ' ')).filter(Boolean)) {
+    if (!areas.some((a) => a.toLowerCase() === place.toLowerCase())) areas.push(place);
+  }
+  const bad = areas.filter((p) => !AREA_RE.test(p));
+  if (bad.length) throw new HttpError(400, `These don't look like place names (letters and spaces, up to 60 characters): ${bad.slice(0, 5).join(', ')}`);
+  if (!areas.length) throw new HttpError(400, 'List at least one place, e.g. Atlanta.');
+  if (areas.length > MAX_AREAS) throw new HttpError(400, `List at most ${MAX_AREAS} places.`);
 
   // Optional: who approves payments on WhatsApp
   const rawApprovers = Array.isArray(b.approverWhatsapp) ? b.approverWhatsapp.map(String) : typeof b.approverWhatsapp === 'string' ? b.approverWhatsapp.split(/[,;\n]+/) : [];
@@ -70,7 +78,7 @@ export function parseBookingSettings(body: unknown): BookingSettings {
   }
   if (approverWhatsapp.length > 5) throw new HttpError(400, 'List at most 5 approval numbers.');
 
-  return { paymentDetails, appointmentHours: hours, atlantaZipPrefixes: prefixes, approverWhatsapp };
+  return { paymentDetails, appointmentHours: hours, atlantaAreas: areas, approverWhatsapp };
 }
 
 /** A setting other than the booking settings, e.g. the WhatsApp template IDs. */
@@ -86,16 +94,4 @@ export async function saveBookingSettings(settings: BookingSettings, userId: str
      ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_by = excluded.updated_by, updated_at = now()`,
     [KEY, JSON.stringify(settings), userId],
   );
-}
-
-/** A US ZIP code ("30005" or "30005-1234") → its 5 digits, or null. */
-export function usZip(value: string): string | null {
-  const m = value.trim().match(/^(\d{5})(?:-\d{4})?$/);
-  return m ? m[1] : null;
-}
-
-/** True when a ZIP code is in the Atlanta service area (Deepika herself); false for anywhere else, incl. outside the US. */
-export function inAtlantaArea(zip: string, settings: BookingSettings): boolean {
-  const five = usZip(zip);
-  return Boolean(five && settings.atlantaZipPrefixes.some((p) => five.startsWith(p)));
 }

@@ -1,15 +1,16 @@
 /**
- * Pooja, Deepika's personal assistant on WhatsApp: the part shared by every way of connecting a number.
+ * Pooja, Deepika's manager on WhatsApp: the part shared by every way of connecting a number.
  * - Meta's WhatsApp Cloud API: server/routes/whatsapp.ts
  * - Twilio (its WhatsApp sandbox, or a number bought from Twilio): server/routes/twilioWhatsapp.ts
  * Each one turns its webhook into an InboundMessage and calls receiveMessage() with a transport that knows how to
- * send replies back the same way. Each also registers itself for messages the dashboard sends later (the booking
- * confirmation), through registerOutboundTransport.
+ * send replies back the same way. Each also registers itself for messages the dashboard sends later (the team's
+ * answer to an enquiry, the booking confirmation), through registerOutboundTransport.
  *
  * Pooja answers questions from the full business facts plus the RAG knowledge base, and takes customers through a
- * booking (server/whatsappBooking.ts): the date and time on Deepika's calendar, the quotation (with brochures), the
- * details and who does the makeup (from the ZIP code), then the 25% advance. A payment screenshot is saved for the
- * team, who approve the booking in the dashboard. She hands chats over to Deepika when asked.
+ * booking (server/whatsappBooking.ts): her welcome with the enquiry form; once it's filled in, the team reviews it (in
+ * the dashboard, or with a tap on WhatsApp); on approval the customer hears who does the makeup (from the event's
+ * city) and gets that artist's quotation; then the package, their name and the 25% advance. A payment screenshot is
+ * saved for the team, who approve the booking. She hands chats over to Deepika when asked.
  *
  * Two ways to run it:
  * - Own number (default): the assistant has its own WhatsApp number, separate from Deepika's. Nobody reads these
@@ -26,9 +27,10 @@
 import type { ChatCompletionMessageParam } from 'openai/resources';
 import { SERVICE_NOT_SPECIFIED } from '../src/data/leads.js';
 import { ADVANCE_PERCENT, BUSINESS_INFO as B, WHATSAPP_CONTACTS } from '../src/data/portfolioData.js';
-import { APPROVER_HELP, approverCommand, bookingsToVerify, isApprover, notifyApprovers } from './approvals.js';
+import { PAYMENT_STAGES } from '../src/data/bookingFlow.js';
+import { APPROVER_HELP, approvalKind, approverCommand, isApprover, notifyApprovers, notifyEnquiryApprovers, waitingForApproval } from './approvals.js';
 import { retrieve, searchOnlyAnswer, type ChatMessage, type Retrieved } from './assistant.js';
-import { checkAvailabilityTool, todayInAtlanta } from './availability.js';
+import { todayInAtlanta } from './availability.js';
 import { inBackground } from './background.js';
 import { getDb, pool } from './db.js';
 import { businessFacts } from './knowledge.js';
@@ -37,9 +39,11 @@ import { buildWhatsAppSystemPrompt, completeChatWithTools, NO_REPLY, openai, OPE
 import { chatStore as chats, type ChatConnection, type ChatInfo } from './whatsappChats.js';
 import {
   approveBooking,
+  approveEnquiry,
   BookingActionError,
   bookingForPaymentProof,
   currentBooking,
+  declineEnquiry,
   describeBooking,
   hasBookingDetails,
   PACKAGE_GUIDE,
@@ -47,16 +51,21 @@ import {
   reopenPayment,
   requestAdvancePayment,
   saveBookingDetails,
+  saveEnquiry,
   savePaymentProof,
+  type CustomerMessages,
 } from './whatsappBooking.js';
 import {
   BROCHURES,
   brochureUrl,
+  ENQUIRY_RECEIVED_MESSAGE,
+  EVENT_OCCASIONS,
   EXTRA_PROOF_MESSAGE,
   PAYMENT_RECEIVED_MESSAGE,
   paymentNotVerifiedMessage,
   QUOTATIONS,
   QUOTE_OCCASIONS,
+  WELCOME_GREETING,
   WELCOME_MESSAGE,
   type QuoteOccasion,
 } from './whatsappQuotes.js';
@@ -226,19 +235,45 @@ export function registerOutboundTransport(kind: string, make: (businessNumber?: 
 }
 
 /**
- * Sends a customer a message from the dashboard (the booking confirmation) through the connection their chat came
- * in on, and keeps it in the conversation so Pooja knows about it. Throws if it can't be sent.
+ * Sends a customer messages from the team (the answer to their enquiry, the booking confirmation) through the
+ * connection their chat came in on, in order, and keeps them in the conversation so Pooja knows about them. A
+ * brochure picture that fails is skipped. Throws if a text can't be sent.
  */
-export async function sendToCustomer(waId: string, text: string): Promise<void> {
+export async function sendToCustomer(waId: string, messages: string | CustomerMessages): Promise<void> {
   const chat = await chats.info(waId);
   // Chats from before connections were saved: the only connection that's set up, if there's just one
   const kind = chat?.transport ?? (outboundTransports.size === 1 ? [...outboundTransports.keys()][0] : undefined);
   if (!kind) throw new Error("This customer's WhatsApp chat isn't known yet.");
   const make = outboundTransports.get(kind);
   if (!make) throw new Error(`WhatsApp via ${kind} isn't set up on this server.`);
-  await make(chat?.businessNumber).send(waId, text, false);
-  await chats.addReply(waId, text, []);
-  console.log(`${LOG} message sent to ${who(waId)} via ${kind} (a confirmation or follow-up, not a reply)`);
+  const sent = await sendAll(waId, make(chat?.businessNumber), typeof messages === 'string' ? [{ text: messages }] : messages);
+  if (sent.length) await chats.addReply(waId, sent.join('\n\n'), []);
+  console.log(`${LOG} ${sent.length} message(s) sent to ${who(waId)} via ${kind} (from the team, not a reply)`);
+}
+
+/**
+ * The team's answer to an enquiry, from the dashboard or a tap on WhatsApp: approved (the customer gets their artist
+ * and prices) or not available (the customer is told). Throws BookingActionError if it can't be done; the message
+ * to the customer is best effort (`sent` false and `error` if it failed).
+ */
+export async function answerEnquiry(
+  id: string,
+  decision: 'approve' | 'decline',
+  userId: string | null,
+): Promise<{ fullName: string; artist: 'deepika' | 'senior' | null; teamQuotes: QuoteOccasion[]; sent: boolean; error?: string }> {
+  const done =
+    decision === 'approve'
+      ? await approveEnquiry(id, userId)
+      : { ...(await declineEnquiry(id, userId)), artist: null, teamQuotes: [] as QuoteOccasion[] };
+  const messages: CustomerMessages = 'messages' in done ? done.messages : [{ text: done.message }];
+  if (!done.waId) return { fullName: done.fullName, artist: done.artist, teamQuotes: done.teamQuotes, sent: false, error: 'This lead has no WhatsApp chat with the assistant.' };
+  try {
+    await sendToCustomer(done.waId, messages);
+    return { fullName: done.fullName, artist: done.artist, teamQuotes: done.teamQuotes, sent: true };
+  } catch (err) {
+    console.error(`${LOG} could not send ${who(done.waId)} the answer to their enquiry:`, err instanceof Error ? err.message : err);
+    return { fullName: done.fullName, artist: done.artist, teamQuotes: done.teamQuotes, sent: false, error: err instanceof Error ? err.message : 'Sending failed.' };
+  }
 }
 
 // ---------- Chat state ----------
@@ -332,6 +367,10 @@ interface Turn {
   outbox: Outgoing[];
   /** The advance was asked for in this turn (booking number). */
   advanceRequested?: string;
+  /** A complete enquiry went to the team in this turn (booking number): the approval numbers are told after the reply. */
+  enquirySent?: string;
+  /** send_quotation sent a quotation in this turn. */
+  quotationSent?: boolean;
   /** How long the knowledge search and the language model took, for the log. */
   searchMs?: number;
   aiMs?: number;
@@ -433,15 +472,77 @@ const customerWords = (messages: ChatMessage[]) => messages.filter((m) => m.role
 
 function toolsFor(waId: string, chat: ChatInfo, messages: ChatMessage[], turn: Turn): Record<string, ChatTool> {
   const customerSaid = customerWords(messages);
+  const first = B.artist.split(' ')[0];
   return {
-    check_availability: checkAvailabilityTool(`${LOG} ${who(waId)}`, `+${waId}`, customerSaid),
+    save_enquiry: {
+      definition: {
+        type: 'function',
+        function: {
+          name: 'save_enquiry',
+          description: `Save the customer's answers to the enquiry form (the welcome message) as they give them, in one message or several: pass only what they've written, and "" or -1 for the rest (that keeps what's saved). Once every answer is there, the enquiry goes to ${first}'s team, who review it and update the customer within two hours. Also for changes to the enquiry's details later on (a new date, place, time or number of people): those go to the team again.`,
+          strict: true,
+          parameters: {
+            type: 'object',
+            additionalProperties: false,
+            required: [
+              'event_date',
+              'event_location',
+              'event_city',
+              'event_state',
+              'event_start_time',
+              'ready_time',
+              'bridal_count',
+              'groom_count',
+              'non_bridal_count',
+              'events_count',
+              'additional_requirements',
+              'occasion',
+              'start_new_booking',
+            ],
+            properties: {
+              event_date: { type: 'string', description: '1. Event date as YYYY-MM-DD (the next upcoming one if they give no year); or "".' },
+              event_location: { type: 'string', description: '2. The event location (venue and city), as they wrote it; or "".' },
+              event_city: { type: 'string', description: 'The city or town of that location, e.g. "Alpharetta", "Atlanta", "Charlotte" (a neighbourhood like "Buckhead" is fine); or "".' },
+              event_state: { type: 'string', description: 'The US state (e.g. "GA", "NC") or country of that location, only if they wrote it; otherwise "".' },
+              event_start_time: { type: 'string', description: '3. Event start time as HH:MM on the 24-hour clock (6 PM = "18:00"); or "".' },
+              ready_time: { type: 'string', description: '4. Makeup ready time / reporting time as HH:MM on the 24-hour clock; or "".' },
+              bridal_count: { type: 'integer', description: '5. How many need bridal makeup (0 if none); -1 if not given.' },
+              groom_count: { type: 'integer', description: '6. How many need groom makeup (0 if none); -1 if not given.' },
+              non_bridal_count: { type: 'integer', description: '7. How many need non-bridal makeup (0 if none); -1 if not given.' },
+              events_count: { type: 'integer', description: '9. Number of events / functions; -1 if not given.' },
+              additional_requirements: { type: 'string', description: '8. Additional requirements, as they wrote them ("None" if they said none); or "".' },
+              occasion: {
+                type: 'string',
+                enum: ['', ...Object.keys(EVENT_OCCASIONS)],
+                description: 'What the event is, only if they said: wedding (incl. reception and other wedding events), engagement, house_warming, half_saree_function, party (birthday or any other party), other; or "".',
+              },
+              start_new_booking: {
+                type: 'boolean',
+                description: 'true only for the first save of a different, new event than the booking under BOOKING SO FAR (e.g. it is already confirmed, or a returning customer wants something new). Otherwise false.',
+              },
+            },
+          },
+        },
+      },
+      run: async (args) => {
+        const saved = await saveEnquiry(waId, chat, args, customerSaid);
+        if (!saved.ok) return saved;
+        if (saved.outcome === 'submitted') {
+          if (!turn.outbox.some((m) => 'text' in m && m.text === ENQUIRY_RECEIVED_MESSAGE)) turn.outbox.push({ text: ENQUIRY_RECEIVED_MESSAGE });
+          turn.enquirySent = saved.bookingId;
+        }
+        if (saved.outcome === 'resubmitted') turn.enquirySent = saved.bookingId;
+        if (saved.outcome === 'submitted' || saved.outcome === 'resubmitted') chat.quotedArtist = undefined;
+        return saved.result;
+      },
+    },
 
     send_quotation: {
       definition: {
         type: 'function',
         function: {
           name: 'send_quotation',
-          description: `Send the customer the brochure and quotation for their occasion, with the prices of the artist who'll do their makeup: ${B.artist.split(' ')[0]} herself when the event's saved ZIP code is in the Atlanta area, a senior artist otherwise. Works only once the event address and ZIP code are saved (save_booking_details). It goes to them word for word, as its own message(s). Occasions: ${Object.entries(QUOTE_OCCASIONS)
+          description: `Send the customer the brochure and quotation for an occasion again, or for another occasion, with the prices of their artist (${first} herself in the Atlanta area, a senior artist outside it). Works only once ${first}'s team has approved the enquiry (they send the first quotation themselves). It goes to them word for word, as its own message(s). Occasions: ${Object.entries(QUOTE_OCCASIONS)
             .map(([occasion, meaning]) => `${occasion} = ${meaning}`)
             .join('; ')}.`,
           strict: true,
@@ -456,31 +557,36 @@ function toolsFor(waId: string, chat: ChatInfo, messages: ChatMessage[], turn: T
       run: async (args) => {
         const occasion = text(args.occasion, 40);
         if (!Object.hasOwn(QUOTATIONS, occasion)) return { ok: false, error: `occasion must be one of: ${Object.keys(QUOTE_OCCASIONS).join(', ')}` };
-        // The prices depend on who does the makeup, which the event's ZIP code decides: no quotation before it
+        // Prices come with the team's approval of the enquiry, which also decides the artist
         const booking = await currentBooking(waId);
-        const artist = booking?.status !== 'confirmed' ? booking?.artist : null;
+        const approved = booking?.status === 'quoted' || booking?.status === 'awaiting_payment';
+        const artist = approved ? booking?.artist : null;
         if (!artist) {
           return {
             ok: false,
-            error: `The prices depend on where the event is (${B.artist.split(' ')[0]} herself in the Atlanta area, a senior artist outside it), and the event address isn't saved yet. Ask warmly for the complete address of the event with its ZIP code, save it with save_booking_details, then call send_quotation. Don't type out any prices meanwhile.`,
+            error:
+              booking?.status === 'enquiry_review'
+                ? `${first}'s team is reviewing the enquiry: they'll update the customer within two hours, with the pricing. Tell them so kindly. Don't type out any prices meanwhile.`
+                : `Prices are shared once ${first}'s team has reviewed the enquiry form. Ask kindly for the form's missing details (save_enquiry). Don't type out any prices meanwhile.`,
           };
         }
         const quote = QUOTATIONS[occasion as QuoteOccasion][artist];
         if (!quote) {
           return {
             ok: false,
-            error: `There's no senior artist price list for ${occasion}. Don't guess a price: tell the customer kindly that ${B.artist.split(' ')[0]}'s team will confirm the quote for their location, and call handoff_to_deepika (reason: "${occasion} quote outside Atlanta").`,
+            error: `There's no senior artist price list for ${occasion}. Don't guess a price: tell the customer kindly that ${first}'s team will confirm the quote for their location, and call handoff_to_deepika (reason: "${occasion} quote outside Atlanta").`,
           };
         }
         for (const image of BROCHURES[occasion as QuoteOccasion]?.[artist] ?? []) turn.outbox.push({ image: brochureUrl(image) });
         if (!turn.outbox.some((m) => 'text' in m && m.text === quote)) turn.outbox.push({ text: quote });
+        turn.quotationSent = true;
         chat.quotedArtist = artist;
         await chats.setQuotedArtist(waId, artist);
         console.log(`${LOG} ${who(waId)}: sending the ${occasion} quotation (${artist})`);
         return {
           ok: true,
-          prices_of: artist === 'deepika' ? 'Deepika herself (Atlanta area)' : 'a senior artist (outside the Atlanta area)',
-          note: `Don't repeat the quotation's prices or details. Put ${QUOTATION_MARK} on its own line in your reply where the brochure and quotation should appear: after anything you say first (good news, a few words about Deepika, "Here are our packages and pricing 👇"), before your question (e.g. "Have a look and let me know which one you like 😊"). Without it, they're sent before your whole reply.`,
+          prices_of: artist === 'deepika' ? 'Deepika herself (Atlanta area)' : 'a senior artist (outside Atlanta)',
+          note: `Don't repeat the quotation's prices or details. Put ${QUOTATION_MARK} on its own line in your reply where the brochure and quotation should appear: after anything you say first ("Here are our packages and pricing 👇"), before your question (e.g. "Have a look and let me know which one you like 😊"). Without it, they're sent before your whole reply.`,
         };
       },
     },
@@ -490,37 +596,27 @@ function toolsFor(waId: string, chat: ChatInfo, messages: ChatMessage[], turn: T
         type: 'function',
         function: {
           name: 'save_booking_details',
-          description: `Save the customer's booking details as you learn them: it creates their booking (a lead for ${B.artist.split(' ')[0]}'s team) the first time and updates it after. Pass only what's new or changed: empty strings and an empty items list keep what's saved. The result says who will do the makeup (from the ZIP code), the prices, and what's still needed.`,
+          description: `After ${first}'s team has approved the enquiry and the customer has seen the prices: save the packages they choose (priced for their artist), their full name and a contact phone. Pass only what's new or changed: empty strings and an empty items list keep what's saved. The result has the prices and what's still needed before the advance.`,
           strict: true,
           parameters: {
             type: 'object',
             additionalProperties: false,
-            required: ['full_name', 'contact_phone', 'event_type', 'event_date', 'event_time', 'event_address', 'zip_code', 'items', 'special_requirements', 'start_new_booking'],
+            required: ['full_name', 'contact_phone', 'items'],
             properties: {
               full_name: { type: 'string', description: 'Their full name, as they typed it; or "".' },
               contact_phone: { type: 'string', description: 'A phone number to reach them on, only if it is not this WhatsApp number; otherwise "".' },
-              event_type: { type: 'string', description: 'e.g. "Wedding", "Engagement", "Reception", "Birthday party"; or "".' },
-              event_date: { type: 'string', description: 'Event date as YYYY-MM-DD; or "".' },
-              event_time: { type: 'string', description: 'When the makeup should start, as HH:MM on the 24-hour clock (8 AM = "08:00"); or "".' },
-              event_address: { type: 'string', description: 'The complete address where the makeup will be done; or "".' },
-              zip_code: { type: 'string', description: 'The ZIP code of that address (copy it here even when it is part of the address); or "".' },
               items: {
                 type: 'array',
-                description: `The packages the customer has chosen themselves, and for how many people. Never guess a package: leave the list empty until they pick one (an empty list keeps what's saved). When they change their choice, save the new list. Packages: ${PACKAGE_GUIDE}.`,
+                description: `The packages the customer has chosen themselves, each with how many looks: one per person, per event (a bride with HD bridal for 2 events = hd_bridal × 2). Never guess a package: leave the list empty until they pick one (an empty list keeps what's saved). When they change their choice, save the whole new list. Packages: ${PACKAGE_GUIDE}.`,
                 items: {
                   type: 'object',
                   additionalProperties: false,
                   required: ['package', 'quantity'],
                   properties: {
                     package: { type: 'string', enum: PACKAGE_IDS },
-                    quantity: { type: 'integer', description: 'How many people (1 for the bride).' },
+                    quantity: { type: 'integer', description: 'How many looks (people × events).' },
                   },
                 },
-              },
-              special_requirements: { type: 'string', description: 'Anything special they asked for (look, outfit, skin, extra hairstyles…); or "".' },
-              start_new_booking: {
-                type: 'boolean',
-                description: 'true only for the first save of a different, new event than the booking under BOOKING SO FAR (e.g. it is already confirmed, or a returning customer wants something new). Otherwise false.',
               },
             },
           },
@@ -662,13 +758,21 @@ function inOrder(reply: string, fixed: Outgoing[]): Outgoing[] {
 }
 
 /**
- * Writes the reply to `messages`: the current conversation, ending with the customer's latest message(s). `firstReply`:
- * nothing has been sent in this conversation yet, so Pooja introduces herself. `returning`: the customer chatted
- * before, more than NEW_CONVERSATION_AFTER_MS ago. The reply is empty when the fixed messages in `turn.outbox` (sent
- * before it) say everything.
+ * Writes the reply to `messages`: the current conversation, ending with the customer's latest message(s).
+ * - `firstReply`: nothing has been sent in this conversation yet.
+ * - `welcomeFirst`: Pooja's welcome with the enquiry form goes out first, word for word, and the reply (if any) follows
+ *   it; without it on a first reply, Pooja introduces herself in her own words.
+ * - `returningWithBooking`: the customer is back after a long break with an enquiry or booking still under way.
+ * The reply is empty when the fixed messages in `turn.outbox` (sent before it) say everything.
  */
-async function answer(waId: string, chat: ChatInfo, messages: ChatMessage[], firstReply: boolean, returning = false): Promise<{ reply: string; turn: Turn }> {
-  const turn: Turn = { handoff: false, outbox: [] };
+async function answer(
+  waId: string,
+  chat: ChatInfo,
+  messages: ChatMessage[],
+  o: { firstReply: boolean; welcomeFirst: boolean; returningWithBooking: boolean },
+): Promise<{ reply: string; turn: Turn }> {
+  const firstReply = o.firstReply;
+  const turn: Turn = { handoff: false, outbox: o.welcomeFirst ? [{ text: WELCOME_MESSAGE }] : [] };
   const searchStarted = Date.now();
   const search = retrieve(messages).catch((err) => {
     console.error(`${LOG} knowledge search failed:`, err instanceof Error ? err.message : err);
@@ -697,9 +801,9 @@ async function answer(waId: string, chat: ChatInfo, messages: ChatMessage[], fir
     sharedNumber: SHARED_NUMBER,
     reachDeepika: REACH_DEEPIKA,
     firstReply,
+    welcomeFirst: o.welcomeFirst,
     // An unfinished booking from the earlier conversation: Pooja asks whether to continue it or start a new one
-    // (a lead with no event details yet, e.g. one who only said hello, isn't a booking to continue)
-    returningWithBooking: returning && Boolean(booking) && booking!.status !== 'confirmed' && hasBookingDetails(booking!),
+    returningWithBooking: o.returningWithBooking,
     booking: describeBooking(booking, chat.quotedArtist, customerWords(messages)),
   });
   const script = scriptCheck(messages);
@@ -712,17 +816,20 @@ async function answer(waId: string, chat: ChatInfo, messages: ChatMessage[], fir
       accept: script.accept,
       revise: (r) => {
         // The reply points to a quotation ("Here are our packages 👇") that wasn't sent
-        if (!turn.outbox.length && (new RegExp(QUOTATION_MARK_RE.source, 'i').test(r) || POINTS_AT_QUOTE.test(r))) {
-          return `You put ${QUOTATION_MARK} in your reply but didn't call send_quotation, so nothing would be shown. Call send_quotation now for their occasion, then write your whole reply again.`;
+        if (!turn.quotationSent && (new RegExp(QUOTATION_MARK_RE.source, 'i').test(r) || POINTS_AT_QUOTE.test(r))) {
+          return `You put ${QUOTATION_MARK} in your reply (or pointed at prices) but didn't call send_quotation, so nothing would be shown. If ${B.artist.split(' ')[0]}'s team has approved the enquiry, call send_quotation now for their occasion; if not, don't point at any prices. Then write your whole reply again.`;
         }
         // The reply asks them to pay or send the screenshot, but they never got the payment message (amount, where to pay)
-        if (!booking?.status && !turn.advanceRequested && ASKS_TO_PAY.test(r)) {
-          return "You asked the customer to pay or send the payment screenshot, but they haven't been sent the payment message, which has the amount and where to pay. If every detail is saved, call request_advance_payment now; if something is still missing, ask for it instead. Then write your whole reply again.";
+        const paymentAsked = booking?.status && PAYMENT_STAGES.includes(booking.status);
+        if (!paymentAsked && !turn.advanceRequested && ASKS_TO_PAY.test(r)) {
+          return "You asked the customer to pay or send the payment screenshot, but they haven't been sent the payment message, which has the amount and where to pay. If the team has approved the enquiry and every detail is saved, call request_advance_payment now; otherwise go on with the step that's due instead. Then write your whole reply again.";
         }
         return null;
       },
       cacheKey: PROMPT_CACHE_KEY,
     });
+    // The enquiry was complete in the very first message: the greeting and the thank-you, without the form
+    if (o.welcomeFirst && turn.enquirySent) turn.outbox[0] = { text: WELCOME_GREETING };
     if (NO_REPLY_RE.test(reply)) {
       if (turn.outbox.length) return { reply: '', turn };
     } else if (reply) {
@@ -734,6 +841,7 @@ async function answer(waId: string, chat: ChatInfo, messages: ChatMessage[], fir
     turn.aiMs = Date.now() - aiStarted;
   }
   // The model failed after a tool may already have run: what it decided still goes out
+  if (o.welcomeFirst && turn.enquirySent) turn.outbox[0] = { text: WELCOME_GREETING };
   if (turn.handoff) return { reply: HANDOFF_REPLY, turn };
   if (turn.outbox.length) return { reply: '', turn };
   if (firstReply) return { reply: WELCOME_MESSAGE, turn };
@@ -844,16 +952,22 @@ async function replyTo(waId: string, latestId: number, transport: WhatsAppTransp
       await chats.setQuotedArtist(waId, null);
       chat.quotedArtist = undefined;
     }
+    // Back after a break with an enquiry or booking still under way: Pooja asks whether to go on with it, instead of
+    // sending the form again (a lead with no details yet, e.g. one who only said hello, has nothing to go on with)
+    const earlier = returning && firstReply && !restart ? await currentBooking(waId).catch(() => null) : null;
+    const returningWithBooking = Boolean(earlier && hasBookingDetails(earlier) && earlier.status !== 'confirmed' && earlier.status !== 'not_available');
+    // The first reply of a conversation starts with Pooja's welcome and the enquiry form, word for word
+    const welcomeFirst = restart || (firstReply && !returningWithBooking);
 
-    // Pooja's welcome is the whole first reply to a hello or "I need makeup services" (with the buttons on Meta)
-    if (restart || (firstReply && welcomeIsTheWholeReply(question))) {
+    // The welcome is the whole reply to a hello or "I need makeup services" (with the buttons on Meta)
+    if (welcomeFirst && welcomeIsTheWholeReply(question)) {
       await transport.send(waId, WELCOME_MESSAGE, true);
       await chats.addReply(waId, WELCOME_MESSAGE, answered);
       console.log(`${LOG} welcomed ${who(waId)}${restart ? ' (asked for makeup services again: new conversation)' : returning ? ' (back after a break: new conversation)' : ''} via ${transport.name} ${seconds(Date.now() - started)} after the ${seconds(waitedMs)} wait`);
       return;
     }
 
-    const { reply, turn } = await answer(waId, chat, messages, firstReply, returning);
+    const { reply, turn } = await answer(waId, chat, messages, { firstReply, welcomeFirst, returningWithBooking });
     // Coexistence: Deepika may have replied from her phone while the answer was being written
     if (SHARED_NUMBER && Date.now() < (await chats.pausedUntil(waId))) return;
     // Brochures, quotations and the payment message word for word, where the reply puts them (or first)
@@ -866,7 +980,15 @@ async function replyTo(waId: string, latestId: number, transport: WhatsAppTransp
     const took = `${seconds(Date.now() - started)} after the ${seconds(waitedMs)} wait (search ${seconds(turn.searchMs)}, AI ${seconds(turn.aiMs)})`;
     const fixed = turn.outbox.length ? `${turn.outbox.length} fixed message(s)` : '';
     const what = [fixed, reply && 'reply'].filter(Boolean).join(' + ');
-    console.log(`${LOG} sent ${what || 'nothing more'} to ${who(waId)} via ${transport.name} ${took}${turn.advanceRequested ? ` (advance asked for booking #${turn.advanceRequested})` : ''}${turn.handoff ? ' and handed over to Deepika' : ''}`);
+    console.log(
+      `${LOG} sent ${what || 'nothing more'} to ${who(waId)} via ${transport.name} ${took}${turn.enquirySent ? ` (enquiry #${turn.enquirySent} sent to the team)` : ''}${turn.advanceRequested ? ` (advance asked for booking #${turn.advanceRequested})` : ''}${turn.handoff ? ' and handed over to Deepika' : ''}`,
+    );
+    // The complete enquiry goes to the approval numbers (e.g. Deepika's WhatsApp), to approve with a tap
+    if (turn.enquirySent) {
+      await notifyEnquiryApprovers(turn.enquirySent, transport.connection.businessNumber).catch((err) =>
+        console.error(`${LOG} could not send enquiry #${turn.enquirySent} for approval:`, err instanceof Error ? err.message : err),
+      );
+    }
   } catch (err) {
     console.error(`${LOG} could not reply to ${who(waId)}:`, err instanceof Error ? err.message : err);
   } finally {
@@ -947,8 +1069,8 @@ async function messageAfterApproval(waId: string | null, text: string): Promise<
 
 /**
  * A message from an approval number (Settings), e.g. Deepika's own WhatsApp: not a customer chat. A tap on Approve or
- * Not received under a payment screenshot (or "approve 105" typed) does what the dashboard's buttons do, and the
- * approver gets a short answer. Anything else gets a reminder of how it works.
+ * Not available under an enquiry, or Approve or Not received under a payment screenshot (or "approve 105" typed), does
+ * what the dashboard's buttons do, and the approver gets a short answer. Anything else gets a reminder of how it works.
  */
 async function handleApprover(transport: WhatsAppTransport, m: InboundMessage) {
   transport.markReadAndTyping(m.id);
@@ -957,19 +1079,32 @@ async function handleApprover(transport: WhatsAppTransport, m: InboundMessage) {
   if (!command) return answer(APPROVER_HELP);
 
   let id = command.bookingId;
+  let kind = command.kind;
   if (!id) {
-    const pending = await bookingsToVerify();
+    const pending = await waitingForApproval();
     if (pending.length !== 1) {
       return answer(
         pending.length
-          ? `Which booking? Payments waiting: ${pending.map((p) => `#${p.id} ${p.fullName}`).join(', ')}. Reply *approve 105* or *reject 105* with its number.`
-          : 'There are no payments waiting for approval right now. 😊',
+          ? `Which one? Waiting for approval: ${pending.map((p) => `#${p.id} ${p.fullName} (${p.kind === 'enquiry' ? 'enquiry' : 'payment'})`).join(', ')}. Reply *approve 105* or *reject 105* with its number.`
+          : 'There is nothing waiting for approval right now. 😊',
       );
     }
     id = pending[0].id;
+    kind = pending[0].kind;
   }
+  // A typed command applies to whatever the booking waits for (an enquiry first, then a payment)
+  kind ??= (await approvalKind(id)) ?? 'payment';
 
   try {
+    if (kind === 'enquiry') {
+      const done = await answerEnquiry(id, command.action === 'approve' ? 'approve' : 'decline', null);
+      console.log(`${LOG} enquiry #${id} ${command.action === 'approve' ? 'approved' : 'marked not available'} on WhatsApp by ${who(m.from)}`);
+      const told = done.sent ? 'They got the message on WhatsApp.' : "But the message couldn't be sent to them on WhatsApp: please message them directly.";
+      if (command.action !== 'approve') return answer(`Okay. ${done.fullName} (enquiry #${id}) has been told we're not available. ${told}`);
+      const artistText = done.artist === 'deepika' ? 'Deepika herself (Atlanta area)' : 'a senior artist (outside Atlanta)';
+      const later = done.teamQuotes.length ? `\n\nThere's no price list for ${done.teamQuotes.join(', ')} with this artist: please send them that quote yourself.` : '';
+      return answer(`✅ Enquiry #${id} for ${done.fullName} is approved: ${artistText}, with the prices. ${told}${later}`);
+    }
     if (command.action === 'approve') {
       const done = await approveBooking(id, null);
       console.log(`${LOG} booking #${id} approved on WhatsApp by ${who(m.from)}`);

@@ -119,47 +119,54 @@ and the prompt in `server/llm.ts`. A number can be connected in two ways, and bo
 | **Twilio** (the WhatsApp sandbox for testing, or a number bought from Twilio) | `/api/twilio/whatsapp` | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` | `server/routes/twilioWhatsapp.ts` |
 | **Meta's Cloud API** (a number registered directly with Meta) | `/api/whatsapp/webhook` | the four `WHATSAPP_*` values | `server/routes/whatsapp.ts` |
 
-**Pooja.** The assistant is *Pooja, Deepika's personal assistant*: warm, natural and never pushy, with short messages
-rather than forms (the personality and the booking journey are in `buildWhatsAppSystemPrompt`). The website's WhatsApp
-buttons open the chat with "Hi, I need makeup services." ready to send. That message, or a plain hello, gets Pooja's
-welcome word for word (`WELCOME_MESSAGE` in `server/whatsappQuotes.ts`). Any other first message gets a reply in which
-she introduces herself.
+**Pooja.** The assistant is *Pooja, Deepika's manager*: warm, natural and never pushy (the personality and the booking
+journey are in `buildWhatsAppSystemPrompt`). The website's WhatsApp buttons open the chat with "Hi, I need makeup
+services." ready to send. Every new conversation starts with her welcome and the enquiry form, word for word
+(`WELCOME_MESSAGE` and `ENQUIRY_FORM` in `server/whatsappQuotes.ts`): event date, location (city & venue), event start
+time, makeup ready / reporting time, how many need bridal, groom and non-bridal makeup, additional requirements, and
+the number of events. To a plain hello or "I need makeup services" that's the whole reply; anything else the customer
+said gets a short reply after it.
 
-**The booking journey** (`server/whatsappBooking.ts`). The model handles the conversation; prices, the artist, the
-advance and the calendar are worked out in code.
+**The booking journey** (`server/whatsappBooking.ts`). The model handles the conversation; the form's completeness,
+the artist, prices, the advance and the calendar are worked out in code.
 
-1. **Occasion:** bridal, engagement, reception, party, family, groom, or a combination.
-2. **Date and time:** checked on the [calendar](#availability-calendar-admincalendar) down to the time of day. If
-   the time is taken, Pooja offers only times the calendar shows open: one hour earlier or later first, then others
-   that day. She can only check dates the customer actually wrote: the tool needs their words and verifies them.
-3. **About Deepika:** a few words about her, once.
-4. **Brochure and quotation:** sent word for word (brochure pictures first, if any are listed in `BROCHURES`).
-5. **Details:** name, phone, event type, the complete address, the ZIP code and any special requirements, saved as
-   they come, on the customer's lead (every chat is a lead in the dashboard from its first message).
-6. **Artist:** the ZIP code decides. In the Atlanta service area (Settings) Deepika does the makeup herself at her
-   prices. Outside it, one of her senior artists does, at the senior artist's prices, and Pooja reassures the
-   customer, sends the senior quotation and waits for their OK. Occasions with no senior price list (engagement, house
-   warming, half saree, party, separate charges) go to Deepika's team for a quote.
-7. **Advance:** once everything is agreed, the payment message goes out word for word. It has the booking summary,
-   the total, the 25% non-refundable advance and the balance, plus the payment details from Settings, and asks for the
-   payment screenshot. The calendar is checked again first. Without payment details in Settings, Pooja passes the
-   customer to Deepika instead.
-8. **Screenshot:** a photo or PDF sent while the booking waits for the advance is saved as the payment proof. The
+1. **The form:** the customer answers in their own words, in one message or several. Pooja saves each answer
+   (`save_enquiry`) on the customer's lead and asks for whatever is missing. A date or time counts only if the
+   customer typed it. No prices before step 3.
+2. **To the team:** once the form is complete, the customer gets "Our team will check your application and update
+   you within two hours" word for word, and the enquiry shows under *Enquiries to approve* (and goes to the approval
+   numbers on WhatsApp, below).
+3. **The team's answer:** **Approve · send prices** in the lead's panel (or Approve on WhatsApp). The event's location
+   decides the artist: a place in the Atlanta service area (Settings) gets Deepika herself, anywhere else (or a US
+   state other than Georgia) one of her senior artists. The customer gets the news, a few words about Deepika or the
+   reassurance about the senior artists, then that artist's quotations (bridal, non-bridal, groom, or the occasion's
+   own), brochure pictures first if any are listed in `BROCHURES`. Occasions with no senior price list (engagement,
+   house warming, half saree, party) are left for the team to quote, with a note on the lead. **Not available** tells
+   the customer instead; a new date they send goes back to the team. Changing the date, place, times or number of
+   people later also goes back to the team.
+4. **Package and name:** the customer picks a package; Pooja saves it with the number of looks, then their full name
+   and phone.
+5. **Advance:** the payment message goes out word for word. It has the booking summary, the total, the 25%
+   non-refundable advance and the balance, plus the payment details from Settings, and asks for the payment
+   screenshot. For Deepika's own bookings the calendar is checked again first. Without payment details in Settings,
+   Pooja passes the customer to Deepika instead.
+6. **Screenshot:** a photo or PDF sent while the booking waits for the advance is saved as the payment proof. The
    customer is thanked word for word and the booking shows under *Payments to verify*. Nothing is marked paid
    automatically.
-9. **Approval:** the team checks the payment in the lead's panel and clicks **Approve booking**. The booking becomes
+7. **Approval:** the team checks the payment in the lead's panel and clicks **Approve booking**. The booking becomes
    confirmed (lead stage *Confirmed*), its time stays taken on the calendar, and the customer gets the confirmation
-   on WhatsApp. **Payment not received — ask again** sends them back to step 8 with a polite message. WhatsApp only
+   on WhatsApp. **Payment not received — ask again** sends them back to step 6 with a polite message. WhatsApp only
    delivers these within 24 hours of the customer's last message; the panel warns when that window has passed.
 
-**Approving on WhatsApp** (`server/approvals.ts`). The approval numbers in Settings (e.g. Deepika's own WhatsApp) get
-each customer's first payment screenshot from the assistant's number, with the booking details and two buttons:
-**Approve** (same as the dashboard's Approve: confirmed, customer told) and **Not received** (customer asked to send it
-again). Typing `approve 105` / `reject 105` works too. Messages from an approval number are never treated as a customer
-chat. WhatsApp only allows this through a Meta-approved template: `server/scripts/create-approval-template.ts` creates
-it in Twilio (Content API, `twilio/card`), submits it for approval and saves its ID in the `settings` table; run it
-again to see the approval status. The screenshot reaches WhatsApp through a signed link that expires after 14 days
-(`/api/whatsapp/proof/…`). PDF receipts are approved in the dashboard only.
+**Approving on WhatsApp** (`server/approvals.ts`). The approval numbers in Settings (e.g. Deepika's own WhatsApp) get,
+from the assistant's number, each completed enquiry form (with where it is, the artist that means and Deepika's
+calendar at that time) with **Approve** / **Not available** buttons, and each customer's first payment screenshot with
+**Approve** / **Not received** buttons. A tap does the same as the dashboard's button. Typing `approve 105` / `reject
+105` works too, for whatever that booking waits for. Messages from an approval number are never treated as a customer
+chat. WhatsApp only allows this through Meta-approved templates: `server/scripts/create-approval-template.ts` creates
+any that are missing in Twilio (Content API, `twilio/card`), submits them for approval and saves their IDs in the
+`settings` table; run it again to see their approval status. The screenshot reaches WhatsApp through a signed link
+that expires after 14 days (`/api/whatsapp/proof/…`). PDF receipts are approved in the dashboard only.
 
 A time is held while the customer is asked to pay (24 hours), while their screenshot is checked, and once confirmed,
 so two customers can't pay for the same time. Only Deepika's own bookings take her time; a senior artist's don't.
@@ -173,15 +180,16 @@ See [Going live with coexistence](#going-live-with-coexistence).
 **Answers.** Every question is sent with the full business facts: all services with what's included, location and
 service area, contact numbers, certification, pricing policy and the FAQ (`businessFacts()` in `server/knowledge.ts`).
 It also gets the closest knowledge-base entries (looks, Instagram captions, reviews) and the customer's booking so far.
-It never invents prices, policies, addresses or products, and takes availability only from the calendar. For anything
+It never invents prices, policies, addresses or products, and leaves availability to the team's review. For anything
 it doesn't know (trial sessions, discounts, studio address, brands…), it offers to pass the question to Deepika and
 gives her direct WhatsApp. With coexistence it says she'll reply in the chat. It replies in the customer's language and
 declines off-topic requests.
 
 **Bookings in the database.** A WhatsApp booking is a row in the same `bookings` table as the website form
-(`channel = 'whatsapp'`, the customer's WhatsApp number as `phone`), with its time, ZIP, artist, priced items
-(`quote_items`), total, advance and `booking_status` (`awaiting_payment` → `payment_review` → `confirmed`). Screenshots
-are in `payment_proofs`.
+(`channel = 'whatsapp'`, the customer's WhatsApp number as `phone`), with the enquiry form's answers, artist, priced
+items (`quote_items`), total, advance and `booking_status` (`enquiry_review` → `quoted` or `not_available` →
+`awaiting_payment` → `payment_review` → `confirmed`). The form's makeup ready / reporting time is `event_time`, the
+time the booking takes on the calendar. Screenshots are in `payment_proofs`.
 
 **Each incoming message:**
 
@@ -241,7 +249,7 @@ doesn't allow function tools (the calendar check) together with reasoning on tha
    page: select **Inbound**, choose **Custom** under **Auto-Reply settings**, and add the same webhook. Leave the status
    callback empty: the bot asks for delivery reports itself. Until this is set, Twilio answers every message itself
    with "Standard auto-reply…".
-5. **Try it:** send "Hi, I need makeup services." from the phone that joined. Pooja welcomes you and asks what it's for.
+5. **Try it:** send "Hi, I need makeup services." from the phone that joined. Pooja welcomes you with the enquiry form.
 
 **Trial accounts can't send the bot's replies.** Twilio's trial only lets messages use `To`, `From`, `StatusCallback` and
 a `ContentSid` pointing at one of Twilio's own templates ("You won't be able to write your own message"). TwiML replies
@@ -374,9 +382,10 @@ change), and say whether it's free or booked only from these marks.
 each other join into one block (8, 9 and 10 AM → 8–11 AM), and a time with a note or not on the hour (7:30–10:00) can be
 added below. WhatsApp bookings show on their own (green once approved, amber while waiting for the advance). A time is
 free unless the day is Fully booked, a booked hour covers it, or one of Deepika's WhatsApp bookings overlaps it (each
-takes the booking length from Settings). Pooja checks the exact time; when it's taken she offers one hour earlier or
-later first, then the nearest free hours that day, and she can list a day's free hours. **Fully booked** is for a
-whole day that's gone: no time is offered then. Blocks are stored in `calendar_blocks`.
+takes the booking length from Settings, from its makeup ready / reporting time). An enquiry's panel, and its message to
+the approval numbers, show whether that time is free; the website chat checks dates for visitors; and Pooja checks the
+time again before asking for the advance. **Fully booked** is for a whole day that's gone. Blocks are stored in
+`calendar_blocks`.
 
 - **Mark days:** click a day, then choose a mark. *Select several days* (or Ctrl/⌘-click, or Shift-click for a range)
   marks many at once. *Clear mark* makes a day open again. Past days can't be changed. After a mark is saved, the next
@@ -395,8 +404,10 @@ Booking settings the team can change without a redeploy (stored in the `settings
 - **Payment details:** sent word for word in the advance request (e.g. `Zelle: +1 980-497-7720 (Deepika S)`). Until
   it's filled in, Pooja can't ask for the advance and passes those customers to Deepika.
 - **Booking length:** how long one booking takes on the calendar (default 2 hours).
-- **Atlanta service area:** ZIP codes or their first digits (default `300, 301, 302, 303, 311, 399`, the USPS
-  Atlanta-area mail centres). Inside: Deepika herself and her prices. Outside: a senior artist and theirs.
+- **Approve on WhatsApp:** the numbers that get each enquiry and payment screenshot to approve with a tap.
+- **Atlanta service area:** cities, towns and neighbourhoods (default: Atlanta, its neighbourhoods and the cities of
+  metro Atlanta). An enquiry whose location names one of them gets Deepika herself and her prices; anywhere else, or
+  a US state other than Georgia, a senior artist and theirs. Customers are never asked for a ZIP code.
 
 ### Leads from Meta ads
 

@@ -1,9 +1,11 @@
 /**
  * The WhatsApp assistant's fixed messages, sent word for word (server/whatsappBot.ts):
- * - Pooja's welcome, the first reply to a plain hello or "Hi, I need makeup services.";
+ * - Pooja's welcome with the enquiry form, the first reply in a conversation;
+ * - the thank-you once the form is filled in, and what the customer hears when the team approves the enquiry (who
+ *   does the makeup, then that artist's quotations) or isn't available;
  * - a quotation for each occasion, with the prices of the artist who will do the makeup (Deepika herself in the
- *   Atlanta area, a senior artist outside it), sent as its own message (the language model only picks the occasion,
- *   with the send_quotation tool, so prices are never retyped by the model), after the brochure images if any;
+ *   Atlanta area, a senior artist outside it), sent as its own message (prices are never retyped by the language
+ *   model), after the brochure images if any;
  * - the advance payment request, the thank-you for a payment screenshot, and the booking confirmation.
  * The prices come from src/data/portfolioData.ts, so a quotation changes with the price lists.
  */
@@ -12,6 +14,7 @@ import {
   ADVANCE_PERCENT,
   BRIDAL_PACKAGE,
   BUSINESS_INFO as B,
+  EXPERIENCE_STATS,
   formatPrice,
   formatServicePrice,
   FUNCTION_PRICES,
@@ -24,14 +27,49 @@ import {
   type ServiceItem,
 } from '../src/data/portfolioData.js';
 
-/** The assistant's name. */
+/** The assistant's name and role. */
 export const ASSISTANT_NAME = 'Pooja';
 const ARTIST = B.artist.split(' ')[0]; // "Deepika"
+export const ASSISTANT_ROLE = `${ARTIST}'s manager`;
 
-/** Pooja's welcome, word for word. */
-export const WELCOME_MESSAGE = `Hi there! 😊 I'm ${ASSISTANT_NAME}, ${ARTIST}'s personal assistant.
+/** The first line of the welcome. */
+export const WELCOME_GREETING = `Hi there! 😊 I'm ${ASSISTANT_NAME}, ${ASSISTANT_ROLE}.`;
 
-Welcome! How can I help you today? Are you looking for makeup services for a wedding or any special occasion?`;
+/** The enquiry form, word for word as the team wrote it (2026-11-24). */
+export const ENQUIRY_FORM = `To help us understand your requirements and share an accurate quotation, kindly fill in the details below:
+
+📋 EVENT & MAKEUP REQUIREMENTS
+
+1. Event Date:
+    ⸻
+2. Event Location (City & Venue):
+    ⸻
+3. Event Start Time:
+    ⸻
+4. Makeup Ready Time / Reporting Time:
+    ⸻
+5. Bridal Makeup:
+    Number of requirements: __
+6. Groom Makeup:
+    Number of requirements: __
+7. Non-Bridal Makeup:
+    Number of requirements: __
+8. Additional Requirements (if any):
+    ⸻
+9. Number of Events / Functions:
+    ⸻
+
+Once you share the above details, our team will review your requirements and share the pricing and package details accordingly.
+
+Thank you for considering Deepika Makeup and Hair. We look forward to being a part of your special occasion! ❤️`;
+
+/** Pooja's welcome, word for word: who she is, then the enquiry form. */
+export const WELCOME_MESSAGE = `${WELCOME_GREETING}\n\n${ENQUIRY_FORM}`;
+
+/** Sent once the enquiry form is complete; the team then reviews it. */
+export const ENQUIRY_RECEIVED_MESSAGE = `Thank you so much for sharing your details! ❤️
+
+Our team will check your application and update you within two hours.`;
 
 /** Who does the makeup, as the customer reads it. */
 export const ARTIST_FOR_CUSTOMER: Record<Artist, string> = {
@@ -133,6 +171,99 @@ export const BROCHURES: Partial<Record<QuoteOccasion, Partial<Record<Artist, str
 
 /** A brochure's public address, for WhatsApp to fetch. */
 export const brochureUrl = (path: string) => `${B.website}${path.startsWith('/') ? '' : '/'}${path}`;
+
+// ---------- The enquiry: the team's answer ----------
+
+/** What the event is for (save_enquiry), and how it's saved as the booking's event type. */
+export const EVENT_OCCASIONS = {
+  wedding: 'Wedding',
+  engagement: 'Engagement',
+  house_warming: 'House warming',
+  half_saree_function: 'Half saree function',
+  party: 'Party',
+  other: 'Other occasion',
+} as const;
+export type EventOccasion = keyof typeof EVENT_OCCASIONS;
+
+/** The occasion of a saved event type (older ones are free text, e.g. "Birthday party"); a wedding when unsure. */
+export function occasionOf(eventType: string | null): EventOccasion {
+  const t = (eventType ?? '').toLowerCase();
+  if (/engage/.test(t)) return 'engagement';
+  if (/house ?warm/.test(t)) return 'house_warming';
+  if (/half ?saree/.test(t)) return 'half_saree_function';
+  if (/party|birthday/.test(t)) return 'party';
+  if (/^other/.test(t)) return 'other';
+  return 'wedding';
+}
+
+/**
+ * The quotations an enquiry needs, from its occasion and the form's numbers: the main person's (the bridal packages
+ * for a wedding, the occasion's own quotation for an engagement, house warming or half saree function), non-bridal
+ * for family and guests, and the groom's. A party gets the party quotation, which is per person, for everyone.
+ */
+export function quotationsFor(eventType: string | null, people: { bridal: number; groom: number; nonBridal: number }): QuoteOccasion[] {
+  const occasion = occasionOf(eventType);
+  if (occasion === 'party') return ['party'];
+  const list: QuoteOccasion[] = [];
+  if (people.bridal > 0) list.push(occasion === 'wedding' || occasion === 'other' ? 'bridal' : occasion);
+  if (people.nonBridal > 0) list.push('non_bridal');
+  if (people.groom > 0) list.push('groom');
+  return list;
+}
+
+/** "15+ years in the beauty industry, 6000+ bridal transformations and 8000+ non-bridal clients" */
+const EXPERIENCE = EXPERIENCE_STATS.map((s) => `${s.value} ${s.label.toLowerCase()}`)
+  .join(', ')
+  .replace(/, ([^,]*)$/, ' and $1');
+
+/** Who does the makeup, as the customer hears it once the enquiry is approved. */
+const ARTIST_INTRO: Record<Artist, string> = {
+  deepika: `Since your event is in Atlanta, *${ARTIST} herself* will be taking care of your makeup ❤️
+
+A little about ${ARTIST}: she has ${EXPERIENCE}. She's passionate about creating personalised looks that make every client feel confident and special, for weddings, engagements, receptions and every celebration. Her goal is for you to feel comfortable and look your absolute best.`,
+  senior: `Since your event is outside Atlanta, one of ${ARTIST}'s *senior makeup artists* will be taking care of your makeup. Our senior artists are personally trained by ${ARTIST} herself and follow her techniques, standards and professional approach, so you'll receive the same quality of service. You'll be in very good hands! ❤️`,
+};
+
+/** The occasion's name in a sentence: "your engagement". */
+const occasionWords: Record<QuoteOccasion, string> = {
+  bridal: 'the bridal makeup',
+  engagement: 'your engagement',
+  house_warming: 'your house warming',
+  half_saree_function: 'your half saree function',
+  party: 'your party',
+  non_bridal: 'the non-bridal makeup',
+  groom: 'the groom makeup',
+};
+
+/**
+ * What the customer gets when the team approves their enquiry, in order: the good news with who does the makeup,
+ * the quotations (with brochures) for that artist, and a question to go on. `quotes` are the quotations to send;
+ * `teamQuotes` the occasions with no price list for this artist, which the team quotes personally.
+ */
+export function enquiryApprovedMessages(
+  artist: Artist,
+  date: string,
+  quotes: QuoteOccasion[],
+  teamQuotes: QuoteOccasion[],
+): ({ text: string } | { image: string })[] {
+  const later = teamQuotes.length
+    ? `For ${teamQuotes.map((o) => occasionWords[o]).join(' and ')}, our team will share the pricing with you personally very soon.`
+    : '';
+  const intro = `Great news! 🎉 Our team has reviewed your requirements, and we'd love to be part of your special occasion on *${longDate(date)}*.\n\n${ARTIST_INTRO[artist]}`;
+  if (!quotes.length) return [{ text: `${intro}\n\n${later} Meanwhile, I'm happy to help with any questions 😊` }];
+  return [
+    { text: `${intro}\n\nHere are our packages and pricing 👇` },
+    ...quotes.flatMap((o) => [...(BROCHURES[o]?.[artist] ?? []).map((image) => ({ image: brochureUrl(image) })), { text: QUOTATIONS[o][artist]! }]),
+    { text: `${later ? `${later}\n\n` : ''}Have a look and let me know which package you'd like 😊 I'm happy to explain anything.` },
+  ];
+}
+
+/** What the customer gets when the team isn't available for their enquiry. */
+export function enquiryNotAvailableMessage(date: string | null): string {
+  return `Thank you so much for your patience! 🙏 Our team has reviewed your requirements, and unfortunately we're not available for your event${date ? ` on *${longDate(date)}*` : ''}.
+
+If you have another date in mind, just share it here and our team will check it for you ❤️`;
+}
 
 // ---------- Booking messages ----------
 

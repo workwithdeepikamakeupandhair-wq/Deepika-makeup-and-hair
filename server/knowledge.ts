@@ -228,7 +228,7 @@ export function businessFacts(): string {
     `About: ${B.bio}`,
     `Phone and WhatsApp: ${B.phonePrimaryCountry} ${B.phonePrimary} (main), ${B.phoneSecondaryCountry} ${B.phoneSecondary}. Email: ${B.email}. Instagram: ${B.instagramHandle} (${B.instagram}).`,
     `Price list: ${PRICE_LIST}`,
-    `Booking: on WhatsApp, Pooja (${B.artist}'s personal assistant) checks the date and time on ${B.artist}'s calendar, shares the packages and collects the details. In the Atlanta service area ${B.artist} does the makeup herself; outside it, one of her senior artists (personally trained by her, following her techniques and standards) does, at the senior artist's prices. A ${ADVANCE_PERCENT}% non-refundable advance of the total confirms the booking, once ${B.artist}'s team has verified the payment.`,
+    `Booking: on WhatsApp, Pooja (${B.artist}'s manager) sends an enquiry form (event date, location, times, how many need bridal, groom and non-bridal makeup, additional requirements, number of events). ${B.artist}'s team reviews it and replies within two hours, with the pricing. In Atlanta ${B.artist} does the makeup herself; outside Atlanta, one of her senior artists (personally trained by her, following her techniques and standards) does, at the senior artist's prices. A ${ADVANCE_PERCENT}% non-refundable advance of the total confirms the booking, once ${B.artist}'s team has verified the payment.`,
     '',
     `Services (name, price, details). Services ending in "(Senior Artist)" are done by a senior artist; all others by ${B.artist} herself:`,
     ...ALL_SERVICES.map((s) => `- ${describeService(s)}`),

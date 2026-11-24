@@ -1,13 +1,17 @@
 /**
- * Creates the WhatsApp template that sends a payment screenshot to the approval numbers (server/approvals.ts), submits
- * it to Meta for approval through Twilio, and saves its ID in the `settings` table. Run once:
- *   node node_modules/tsx/dist/cli.mjs server/scripts/create-approval-template.ts          (create, or show the status)
- *   node node_modules/tsx/dist/cli.mjs server/scripts/create-approval-template.ts --new    (create a new one anyway)
+ * Creates the WhatsApp templates that send approvals to the approval numbers (server/approvals.ts), submits them to
+ * Meta for approval through Twilio, and saves their IDs in the `settings` table:
+ * - paymentApproval: a payment screenshot with the booking details (Approve / Not received);
+ * - enquiryApproval: a completed enquiry form (Approve / Not available).
+ * Run once; a template that already exists is not created again:
+ *   node node_modules/tsx/dist/cli.mjs server/scripts/create-approval-template.ts                   (create missing ones, show the status)
+ *   node node_modules/tsx/dist/cli.mjs server/scripts/create-approval-template.ts --new enquiry     (create a new enquiry template anyway)
+ *   node node_modules/tsx/dist/cli.mjs server/scripts/create-approval-template.ts --sid HX… payment (submit one created earlier)
  * Meta usually approves within minutes, at most about a day. Until then, approvals happen in the dashboard.
  */
 import '../env.js';
 import { BUSINESS_INFO as B } from '../../src/data/portfolioData.js';
-import type { ApprovalTemplateVariables, WhatsAppTemplates } from '../approvals.js';
+import type { ApprovalTemplateVariables, EnquiryTemplateVariables, WhatsAppTemplates } from '../approvals.js';
 import { getDb, pool } from '../db.js';
 import { getSetting } from '../settings.js';
 
@@ -28,8 +32,8 @@ async function twilio(method: string, url: string, body?: unknown) {
   return data;
 }
 
-/** Sample values Meta reviews; {{8}} is a real picture on the website (payment screenshots use the same domain). */
-const SAMPLES: ApprovalTemplateVariables = {
+/** Sample values Meta reviews; the payment one's {{8}} is a real picture on the website (screenshots use the same domain). */
+const PAYMENT_SAMPLES: ApprovalTemplateVariables = {
   '1': '105',
   '2': 'Priya Sharma',
   '3': 'Airbrush Bridal Makeup',
@@ -40,47 +44,87 @@ const SAMPLES: ApprovalTemplateVariables = {
   '8': 'images/portfolio/svc-bridal.jpg',
 };
 
-const TEMPLATE = {
-  friendly_name: 'dmh_payment_approval',
-  language: 'en',
-  variables: SAMPLES,
-  types: {
-    'twilio/card': {
-      title:
-        '💳 New advance payment to verify\n\nBooking #{{1}} for {{2}}\nPackage: {{3}}\nDate: {{4}}\nArtist: {{5}}\nTotal: {{6}} · Advance: {{7}}\n\n' +
-        'Please check the payment screenshot, then tap Approve to confirm the booking, or Not received to ask the customer to send it again.',
-      subtitle: `${B.name} · booking assistant`,
-      media: [`${B.website}/{{8}}`],
-      actions: [
-        { type: 'QUICK_REPLY', title: 'Approve', id: 'approve_{{1}}' },
-        { type: 'QUICK_REPLY', title: 'Not received', id: 'reject_{{1}}' },
-      ],
+const ENQUIRY_SAMPLES: EnquiryTemplateVariables = {
+  '1': '106',
+  '2': 'Anjali Rao',
+  '3': 'Wedding: 1 bridal, 3 non-bridal',
+  '4': 'Saturday, April 10, 2027',
+  '5': 'Hilton Garden Inn, Alpharetta, GA (Atlanta area: Deepika)',
+  '6': 'event starts 6:00 PM · makeup ready / reporting 4:00 PM',
+  '7': '2',
+  '8': 'Hairstyle with fresh flowers',
+  '9': '4:00 PM is free',
+};
+
+const TEMPLATES: Record<keyof WhatsAppTemplates, Record<string, unknown>> = {
+  paymentApproval: {
+    friendly_name: 'dmh_payment_approval',
+    language: 'en',
+    variables: PAYMENT_SAMPLES,
+    types: {
+      'twilio/card': {
+        title:
+          '💳 New advance payment to verify\n\nBooking #{{1}} for {{2}}\nPackage: {{3}}\nDate: {{4}}\nArtist: {{5}}\nTotal: {{6}} · Advance: {{7}}\n\n' +
+          'Please check the payment screenshot, then tap Approve to confirm the booking, or Not received to ask the customer to send it again.',
+        subtitle: `${B.name} · booking assistant`,
+        media: [`${B.website}/{{8}}`],
+        actions: [
+          { type: 'QUICK_REPLY', title: 'Approve', id: 'approve_{{1}}' },
+          { type: 'QUICK_REPLY', title: 'Not received', id: 'reject_{{1}}' },
+        ],
+      },
+    },
+  },
+  enquiryApproval: {
+    friendly_name: 'dmh_enquiry_approval',
+    language: 'en',
+    variables: ENQUIRY_SAMPLES,
+    types: {
+      'twilio/card': {
+        title:
+          '📝 New enquiry to review\n\nEnquiry #{{1}} from {{2}}\nMakeup: {{3}}\nDate: {{4}}\nLocation: {{5}}\nTimes: {{6}}\nEvents: {{7}}\nRequirements: {{8}}\nCalendar: {{9}}\n\n' +
+          'Please check the details, then tap Approve to send the customer their artist and prices, or Not available to let them know.',
+        subtitle: `${B.name} · booking assistant`,
+        actions: [
+          { type: 'QUICK_REPLY', title: 'Approve', id: 'enq_approve_{{1}}' },
+          { type: 'QUICK_REPLY', title: 'Not available', id: 'enq_reject_{{1}}' },
+        ],
+      },
     },
   },
 };
 
+const KIND_ARG: Record<string, keyof WhatsAppTemplates> = { payment: 'paymentApproval', enquiry: 'enquiryApproval' };
+const argAfter = (flag: string) => (process.argv.includes(flag) ? process.argv[process.argv.indexOf(flag) + 1] : undefined);
+
 try {
   const saved = await getSetting<WhatsAppTemplates>('whatsapp_templates');
-  let sid = saved.paymentApproval;
-  // --sid HX…: submit a template that was created but not yet submitted (e.g. after a failed run)
-  const given = process.argv[process.argv.indexOf('--sid') + 1];
-  const existing = process.argv.includes('--sid') && /^HX[0-9a-f]{32}$/.test(given ?? '') ? given : null;
-  if (!sid || existing || process.argv.includes('--new')) {
-    const created = existing ? await twilio('GET', `${CONTENT}/${existing}`) : await twilio('POST', CONTENT, TEMPLATE);
-    sid = created.sid as string;
-    console.log(`Template ${existing ? 'found' : 'created'}: ${sid}`);
-    const approvalUrl = (created.links?.approval_create as string | undefined) ?? `${CONTENT}/${sid}/ApprovalRequests/whatsapp`;
-    const approval = await twilio('POST', approvalUrl, { name: `dmh_payment_approval_${Date.now().toString(36)}`, category: 'UTILITY' });
-    console.log(`Submitted to WhatsApp for approval: ${approval.status}`);
-    await getDb().query(
-      `INSERT INTO settings (key, value) VALUES ('whatsapp_templates', $1)
-       ON CONFLICT (key) DO UPDATE SET value = settings.value || excluded.value, updated_at = now()`,
-      [JSON.stringify({ paymentApproval: sid })],
-    );
-    console.log('Saved in settings ("whatsapp_templates").');
+  // --new <kind>: a new template anyway; --sid HX… <kind>: submit a template that was created but not yet submitted
+  const renew = KIND_ARG[argAfter('--new') ?? ''];
+  const givenSid = argAfter('--sid');
+  const existing = givenSid && /^HX[0-9a-f]{32}$/.test(givenSid) ? { sid: givenSid, kind: KIND_ARG[process.argv[process.argv.indexOf('--sid') + 2] ?? ''] } : null;
+  if (givenSid && !existing?.kind) throw new Error('Use --sid HX… payment|enquiry');
+
+  for (const kind of Object.keys(TEMPLATES) as (keyof WhatsAppTemplates)[]) {
+    let sid = saved[kind];
+    const submitExisting = existing?.kind === kind;
+    if (!sid || submitExisting || renew === kind) {
+      const created = submitExisting ? await twilio('GET', `${CONTENT}/${existing!.sid}`) : await twilio('POST', CONTENT, TEMPLATES[kind]);
+      sid = created.sid as string;
+      console.log(`${kind}: template ${submitExisting ? 'found' : 'created'}: ${sid}`);
+      const approvalUrl = (created.links?.approval_create as string | undefined) ?? `${CONTENT}/${sid}/ApprovalRequests/whatsapp`;
+      const approval = await twilio('POST', approvalUrl, { name: `${TEMPLATES[kind].friendly_name}_${Date.now().toString(36)}`, category: 'UTILITY' });
+      console.log(`${kind}: submitted to WhatsApp for approval: ${approval.status}`);
+      await getDb().query(
+        `INSERT INTO settings (key, value) VALUES ('whatsapp_templates', $1)
+         ON CONFLICT (key) DO UPDATE SET value = settings.value || excluded.value, updated_at = now()`,
+        [JSON.stringify({ [kind]: sid })],
+      );
+      console.log(`${kind}: saved in settings ("whatsapp_templates").`);
+    }
+    const status = await twilio('GET', `${CONTENT}/${sid}/ApprovalRequests`);
+    console.log(`${kind}: template ${sid}: WhatsApp status "${status.whatsapp?.status ?? 'unknown'}"${status.whatsapp?.rejection_reason ? ` (${status.whatsapp.rejection_reason})` : ''}`);
   }
-  const status = await twilio('GET', `${CONTENT}/${sid}/ApprovalRequests`);
-  console.log(`Template ${sid}: WhatsApp status "${status.whatsapp?.status ?? 'unknown'}"${status.whatsapp?.rejection_reason ? ` (${status.whatsapp.rejection_reason})` : ''}`);
 } finally {
   await pool?.end();
 }

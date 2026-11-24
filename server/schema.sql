@@ -60,12 +60,12 @@ CREATE TABLE IF NOT EXISTS availability (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 
--- Bookings made with the WhatsApp assistant (Pooja): she collects the details, the customer pays the 25% advance and
--- sends a screenshot, and the team approves the booking in the dashboard. A lead without booking_status is still
--- collecting details (or is a plain enquiry).
+-- Bookings made with the WhatsApp assistant (Pooja): the customer fills in the enquiry form, the team approves the
+-- enquiry, Pooja shares the prices, the customer pays the 25% advance and sends a screenshot, and the team approves the
+-- booking. A lead without booking_status is still filling in the enquiry (or is a plain enquiry).
 ALTER TABLE bookings ADD COLUMN IF NOT EXISTS event_type           text;           -- e.g. "Wedding", "Engagement"
-ALTER TABLE bookings ADD COLUMN IF NOT EXISTS event_time           time;           -- when the makeup starts
-ALTER TABLE bookings ADD COLUMN IF NOT EXISTS event_zip            text;
+ALTER TABLE bookings ADD COLUMN IF NOT EXISTS event_time           time;           -- the form's makeup ready / reporting time
+ALTER TABLE bookings ADD COLUMN IF NOT EXISTS event_zip            text;           -- no longer asked for (since 2026-11-24)
 ALTER TABLE bookings ADD COLUMN IF NOT EXISTS artist               text CHECK (artist IN ('deepika', 'senior'));
 ALTER TABLE bookings ADD COLUMN IF NOT EXISTS quote_items          jsonb;          -- [{package, title, quantity, unitPrice, perPerson}]
 ALTER TABLE bookings ADD COLUMN IF NOT EXISTS total_price          numeric(10, 2);
@@ -77,6 +77,22 @@ ALTER TABLE bookings ADD COLUMN IF NOT EXISTS confirmed_at         timestamptz;
 ALTER TABLE bookings ADD COLUMN IF NOT EXISTS confirmed_by         bigint REFERENCES admin_users (id) ON DELETE SET NULL;
 ALTER TABLE bookings ADD COLUMN IF NOT EXISTS contact_phone        text;           -- if not the WhatsApp number
 ALTER TABLE bookings ADD COLUMN IF NOT EXISTS special_requirements text;
+-- The enquiry form (2026-11-24); its date, location and requirements go in event_date, event_location and
+-- special_requirements, its makeup ready / reporting time in event_time
+ALTER TABLE bookings ADD COLUMN IF NOT EXISTS event_start_time     time;
+ALTER TABLE bookings ADD COLUMN IF NOT EXISTS event_city           text;           -- decides the artist (Atlanta area or not)
+ALTER TABLE bookings ADD COLUMN IF NOT EXISTS event_state          text;           -- US state or country, if the customer gave it
+ALTER TABLE bookings ADD COLUMN IF NOT EXISTS bridal_count         smallint;
+ALTER TABLE bookings ADD COLUMN IF NOT EXISTS groom_count          smallint;
+ALTER TABLE bookings ADD COLUMN IF NOT EXISTS non_bridal_count     smallint;
+ALTER TABLE bookings ADD COLUMN IF NOT EXISTS events_count         smallint;
+ALTER TABLE bookings ADD COLUMN IF NOT EXISTS enquiry_submitted_at timestamptz;
+ALTER TABLE bookings ADD COLUMN IF NOT EXISTS enquiry_reviewed_at  timestamptz;
+ALTER TABLE bookings ADD COLUMN IF NOT EXISTS enquiry_reviewed_by  bigint REFERENCES admin_users (id) ON DELETE SET NULL;
+-- The enquiry stages come before the payment ones (2026-11-24)
+ALTER TABLE bookings DROP CONSTRAINT IF EXISTS bookings_booking_status_check;
+ALTER TABLE bookings ADD CONSTRAINT bookings_booking_status_check
+  CHECK (booking_status IN ('enquiry_review', 'not_available', 'quoted', 'awaiting_payment', 'payment_review', 'confirmed'));
 
 CREATE INDEX IF NOT EXISTS bookings_booking_status_idx ON bookings (booking_status) WHERE booking_status IS NOT NULL;
 

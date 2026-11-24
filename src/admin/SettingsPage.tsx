@@ -1,6 +1,7 @@
 /**
- * Booking settings for the WhatsApp assistant (Pooja): the payment details she sends with the advance request, how
- * long a booking takes on the calendar, and the ZIP codes of the Atlanta area, where Deepika does the makeup herself.
+ * Booking settings for the WhatsApp assistant (Pooja): the payment details she sends with the advance request, the
+ * numbers that approve enquiries and payments on WhatsApp, how long a booking takes on the calendar, and the places of
+ * the Atlanta area, where Deepika does the makeup herself.
  */
 import React, { useCallback, useEffect, useState } from 'react';
 import { AlertTriangle, Clock, CreditCard, MapPin, MessageCircle, RefreshCw, Smartphone } from 'lucide-react';
@@ -11,14 +12,14 @@ import { api, NotLoggedIn } from './api';
 interface Form {
   paymentDetails: string;
   appointmentHours: string;
-  zips: string;
+  areas: string;
   approvers: string;
 }
 
 const toForm = (s: BookingSettings): Form => ({
   paymentDetails: s.paymentDetails,
   appointmentHours: String(s.appointmentHours),
-  zips: s.atlantaZipPrefixes.join(', '),
+  areas: s.atlantaAreas.join(', '),
   approvers: (s.approverWhatsapp ?? []).join(', '),
 });
 
@@ -27,7 +28,7 @@ const listOf = (value: string) => value.split(/[,;\n]+/).map((v) => v.trim()).fi
 const sameForm = (a: Form, b: Form) =>
   a.paymentDetails.trim() === b.paymentDetails.trim() &&
   Number(a.appointmentHours) === Number(b.appointmentHours) &&
-  a.zips.split(/[\s,;]+/).filter(Boolean).join(',') === b.zips.split(/[\s,;]+/).filter(Boolean).join(',') &&
+  listOf(a.areas).join(',') === listOf(b.areas).join(',') &&
   listOf(a.approvers).join(',') === listOf(b.approvers).join(',');
 
 const inputClass =
@@ -87,7 +88,7 @@ export const SettingsPage: React.FC<{ onLoggedOut: () => void }> = ({ onLoggedOu
       const next = await api.saveSettings({
         paymentDetails: form.paymentDetails.trim(),
         appointmentHours: Number(form.appointmentHours),
-        atlantaZipPrefixes: form.zips.split(/[\s,;]+/).filter(Boolean),
+        atlantaAreas: listOf(form.areas),
         approverWhatsapp: listOf(form.approvers),
       });
       const f = toForm(next);
@@ -110,7 +111,8 @@ export const SettingsPage: React.FC<{ onLoggedOut: () => void }> = ({ onLoggedOu
         <div>
           <h1 className="font-serif text-3xl sm:text-4xl">Settings</h1>
           <p className="mt-1 max-w-2xl text-sm text-[#6A5F56]">
-            How Pooja, the WhatsApp assistant, takes bookings: the payment details she sends, how long a booking takes on the calendar, and where Deepika does the makeup herself.
+            How Pooja, the WhatsApp assistant, takes bookings: the payment details she sends, who approves enquiries and payments, how long a booking takes on the calendar, and
+            where Deepika does the makeup herself.
           </p>
         </div>
         <button
@@ -164,11 +166,22 @@ export const SettingsPage: React.FC<{ onLoggedOut: () => void }> = ({ onLoggedOu
           </p>
         </Card>
 
-        <Card icon={Smartphone} title="Approve payments on WhatsApp" htmlFor="settings-approvers">
+        <Card icon={Smartphone} title="Approve on WhatsApp" htmlFor="settings-approvers">
           <p className="text-sm text-[#6A5F56] leading-relaxed">
-            When a customer sends their payment screenshot, these WhatsApp numbers get it from the assistant's number with the booking details and two buttons:{' '}
-            <strong>Approve</strong> (the booking is confirmed and the customer gets the confirmation) or <strong>Not received</strong> (the customer is asked to send it
-            again). Use full international numbers, separated by commas. These numbers talk to the assistant only for approvals, not as customers.
+            These WhatsApp numbers get, from the assistant's number:
+          </p>
+          <ul className="list-disc space-y-1 pl-5 text-sm text-[#6A5F56] leading-relaxed">
+            <li>
+              every completed <strong>enquiry form</strong>, with two buttons: <strong>Approve</strong> (the customer gets their artist and the prices) or{' '}
+              <strong>Not available</strong> (the customer is told);
+            </li>
+            <li>
+              every <strong>payment screenshot</strong>, with the booking details and two buttons: <strong>Approve</strong> (the booking is confirmed and the customer gets the
+              confirmation) or <strong>Not received</strong> (the customer is asked to send it again).
+            </li>
+          </ul>
+          <p className="text-sm text-[#6A5F56] leading-relaxed">
+            Use full international numbers, separated by commas. These numbers talk to the assistant only for approvals, not as customers.
           </p>
           <input
             id="settings-approvers"
@@ -184,8 +197,8 @@ export const SettingsPage: React.FC<{ onLoggedOut: () => void }> = ({ onLoggedOu
 
         <Card icon={Clock} title="Booking length" htmlFor="settings-hours">
           <p className="text-sm text-[#6A5F56] leading-relaxed">
-            How long each of Deepika's bookings takes on the calendar. When a customer asks for a time, Pooja treats every booking that day as taking this long, so she never
-            offers a time that overlaps one.
+            How long each of Deepika's bookings takes on the calendar, from its makeup ready / reporting time. The calendar check on an enquiry, and again before Pooja asks for
+            the advance, treats every booking that day as taking this long, so two bookings never overlap.
           </p>
           <div className="flex items-center gap-3">
             <input
@@ -203,23 +216,23 @@ export const SettingsPage: React.FC<{ onLoggedOut: () => void }> = ({ onLoggedOu
           </div>
         </Card>
 
-        <Card icon={MapPin} title="Atlanta service area" htmlFor="settings-zips">
+        <Card icon={MapPin} title="Atlanta service area" htmlFor="settings-areas">
           <p className="text-sm text-[#6A5F56] leading-relaxed">
-            ZIP codes, or their first 3–4 digits, separated by commas. An event inside this area gets <strong>Deepika herself</strong> at her prices. Anywhere else gets{' '}
-            <strong>one of her senior artists</strong> at the senior artist's prices, and Pooja shows the customer the new quote before asking for the advance.
+            Cities, towns and neighbourhoods, separated by commas. When you approve an enquiry whose location names one of these places, the customer is told that{' '}
+            <strong>Deepika herself</strong> will do their makeup and gets her prices. Anywhere else (or a US state other than Georgia) gets{' '}
+            <strong>one of her senior artists</strong> and the senior artist's prices.
           </p>
-          <input
-            id="settings-zips"
-            type="text"
-            inputMode="numeric"
-            value={form.zips}
-            onChange={(e) => change({ zips: e.target.value })}
-            placeholder="300, 301, 302, 303, 311, 399"
-            className={`${inputClass} tabular-nums`}
+          <textarea
+            id="settings-areas"
+            rows={5}
+            value={form.areas}
+            onChange={(e) => change({ areas: e.target.value })}
+            placeholder="Atlanta, Buckhead, Alpharetta, Marietta…"
+            className={inputClass}
           />
           <p className="text-xs text-[#A39689]">
-            The starting list ({DEFAULT_BOOKING_SETTINGS.atlantaZipPrefixes.join(', ')}) covers the US Postal Service's Atlanta-area ZIP codes: 300–303 for metro Atlanta, 311
-            and 399 for Atlanta's own business ZIP codes. Add a full ZIP (e.g. 30501) to include one town, or narrow the list down.
+            The starting list is Atlanta, its neighbourhoods and the cities of metro Atlanta ({DEFAULT_BOOKING_SETTINGS.atlantaAreas.length} places). Add a town to include it, or
+            remove places to narrow the area down.
           </p>
         </Card>
 

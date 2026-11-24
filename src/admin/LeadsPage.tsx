@@ -1,31 +1,59 @@
 /**
  * The leads dashboard: every enquiry from Meta ads, the website form and the WhatsApp assistant, with stage and
- * owner editable in place. Refreshes itself every minute so new ad leads appear without reloading. "Payments to
- * verify" lists the WhatsApp bookings whose payment screenshot waits for the team's approval.
+ * owner editable in place. Refreshes itself every minute so new ad leads appear without reloading. "Enquiries to
+ * approve" lists the WhatsApp enquiry forms waiting for the team's review; "Payments to verify" the WhatsApp bookings
+ * whose payment screenshot waits for the team's approval.
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { BadgeCheck, Inbox, Phone, RefreshCw, Search } from 'lucide-react';
+import { BadgeCheck, ClipboardList, Inbox, Phone, RefreshCw, Search } from 'lucide-react';
 import { timeLabel } from '../data/bookingFlow';
 import { LEAD_SOURCES, LEAD_STAGES, type AdminUser, type Lead } from '../data/leads';
-import { api, NotLoggedIn, type LeadsPageData } from './api';
+import { api, NotLoggedIn, type LeadsPageData, type WaitingCounts } from './api';
 import { AssigneeSelect, BookingStatusPill, SourcePill, StageSelect } from './controls';
 import { channelLabel, eventDateLabel, fullDateTime, timeAgo } from './format';
 import { LeadDrawer } from './LeadDrawer';
 
 const AUTO_REFRESH_MS = 60_000;
-const TO_VERIFY = 'payment_review';
+
+/** The two "to approve" filters: WhatsApp bookings at that stage. */
+const TO_APPROVE = [
+  {
+    status: 'enquiry_review',
+    count: 'enquiriesToApprove',
+    label: 'Enquiries to approve',
+    icon: ClipboardList,
+    title: 'WhatsApp enquiry forms waiting for your review',
+    style: { on: 'border-[#2B5AB0] bg-[#2B5AB0] text-white', some: 'border-[#CFDDF8] bg-[#E8F0FE] text-[#2B5AB0] hover:bg-[#DCE7FD]', badge: 'bg-white text-[#2B5AB0]' },
+    empty: {
+      title: 'No enquiries to approve',
+      text: 'When a customer fills in the enquiry form on WhatsApp, it appears here for you to approve (they then get their artist and prices) or mark Not available.',
+    },
+  },
+  {
+    status: 'payment_review',
+    count: 'paymentsToVerify',
+    label: 'Payments to verify',
+    icon: BadgeCheck,
+    title: 'WhatsApp bookings whose payment screenshot waits for your approval',
+    style: { on: 'border-[#B4236E] bg-[#B4236E] text-white', some: 'border-[#F5C6DE] bg-[#FCE8F3] text-[#B4236E] hover:bg-[#F9DCEC]', badge: 'bg-white text-[#B4236E]' },
+    empty: {
+      title: 'No payments to verify',
+      text: 'When a customer sends their advance payment screenshot on WhatsApp, their booking appears here for you to check and approve.',
+    },
+  },
+] as const;
 
 type Changes = { stage?: string; assignedTo?: string | null; adminNotes?: string | null };
 
 export const LeadsPage: React.FC<{
   onLoggedOut: () => void;
-  /** The latest count of payments to verify, for the header's badge. */
-  onPaymentsToVerify?: (n: number) => void;
+  /** The latest counts of enquiries and payments to approve, for the header's badge. */
+  onWaiting?: (w: WaitingCounts) => void;
   /** A booking was approved or sent back: the header's badge should refresh. */
   onBookingChanged?: () => void;
-}> = ({ onLoggedOut, onPaymentsToVerify, onBookingChanged }) => {
+}> = ({ onLoggedOut, onWaiting, onBookingChanged }) => {
   const [stage, setStage] = useState('');
-  /** '' or 'payment_review' (the "Payments to verify" filter) */
+  /** '', 'enquiry_review' or 'payment_review' (the "to approve" filters) */
   const [booking, setBooking] = useState('');
   const [source, setSource] = useState('');
   const [search, setSearch] = useState('');
@@ -62,7 +90,7 @@ export const LeadsPage: React.FC<{
         const page = await api.leads({ stage, source, booking, q: query });
         if (id !== latestRequest.current) return; // a newer filter change already replaced this request
         setData(page);
-        onPaymentsToVerify?.(page.paymentsToVerify);
+        onWaiting?.({ enquiriesToApprove: page.enquiriesToApprove, paymentsToVerify: page.paymentsToVerify });
         setError('');
         setUpdatedAt(new Date());
         setNow(Date.now());
@@ -72,7 +100,7 @@ export const LeadsPage: React.FC<{
         if (id === latestRequest.current) setLoading(false);
       }
     },
-    [stage, source, booking, query, handleError, onPaymentsToVerify],
+    [stage, source, booking, query, handleError, onWaiting],
   );
 
   useEffect(() => {
@@ -144,8 +172,10 @@ export const LeadsPage: React.FC<{
   /** A booking was approved or sent back from the side panel: show the new lead, and refresh the badge. */
   const bookingChanged = (next: Lead, previous: Lead) => {
     replaceLead(next, previous.stage);
-    if (previous.bookingStatus === TO_VERIFY && next.bookingStatus !== TO_VERIFY) {
-      setData((d) => d && { ...d, paymentsToVerify: Math.max(0, d.paymentsToVerify - 1) });
+    for (const f of TO_APPROVE) {
+      if (previous.bookingStatus === f.status && next.bookingStatus !== f.status) {
+        setData((d) => d && { ...d, [f.count]: Math.max(0, d[f.count] - 1) });
+      }
     }
     onBookingChanged?.();
   };
@@ -154,8 +184,7 @@ export const LeadsPage: React.FC<{
   const total = Object.values(counts).reduce((a, b) => a + b, 0);
   const openLead = data?.leads.find((l) => l.id === openId) ?? null;
   const filtered = Boolean(stage || source || query || booking);
-  const toVerify = data?.paymentsToVerify ?? 0;
-  const verifying = booking === TO_VERIFY;
+  const approving = TO_APPROVE.find((f) => f.status === booking);
 
   return (
     <>
@@ -174,32 +203,34 @@ export const LeadsPage: React.FC<{
           </button>
         </div>
 
-        {/* Payments to verify, then the stage tabs with counts */}
+        {/* Enquiries and payments to approve, then the stage tabs with counts */}
         <div role="tablist" aria-label="Filter by stage" className="mt-6 flex gap-2 overflow-x-auto pb-1 -mx-4 px-4 sm:mx-0 sm:px-0">
-          <button
-            role="tab"
-            aria-selected={verifying}
-            onClick={() => {
-              setBooking(verifying ? '' : TO_VERIFY);
-              setStage('');
-            }}
-            title="WhatsApp bookings whose payment screenshot waits for your approval"
-            className={`shrink-0 inline-flex items-center gap-2 rounded-full border px-4 py-2 text-xs font-semibold transition-colors ${
-              verifying
-                ? 'border-[#B4236E] bg-[#B4236E] text-white'
-                : toVerify > 0
-                  ? 'border-[#F5C6DE] bg-[#FCE8F3] text-[#B4236E] hover:bg-[#F9DCEC]'
-                  : 'border-[#E7DFD6] bg-white text-[#6A5F56] hover:bg-[#F4EFEA]'
-            }`}
-          >
-            <BadgeCheck className="w-3.5 h-3.5" aria-hidden /> Payments to verify
-            <span className={`rounded-full px-1.5 py-0.5 text-[10px] tabular-nums ${verifying ? 'bg-white/20' : toVerify > 0 ? 'bg-white text-[#B4236E]' : 'bg-[#F4EFEA]'}`}>
-              {toVerify}
-            </span>
-          </button>
+          {TO_APPROVE.map((f) => {
+            const on = booking === f.status;
+            const n = data?.[f.count] ?? 0;
+            const Icon = f.icon;
+            return (
+              <button
+                key={f.status}
+                role="tab"
+                aria-selected={on}
+                onClick={() => {
+                  setBooking(on ? '' : f.status);
+                  setStage('');
+                }}
+                title={f.title}
+                className={`shrink-0 inline-flex items-center gap-2 rounded-full border px-4 py-2 text-xs font-semibold transition-colors ${
+                  on ? f.style.on : n > 0 ? f.style.some : 'border-[#E7DFD6] bg-white text-[#6A5F56] hover:bg-[#F4EFEA]'
+                }`}
+              >
+                <Icon className="w-3.5 h-3.5" aria-hidden /> {f.label}
+                <span className={`rounded-full px-1.5 py-0.5 text-[10px] tabular-nums ${on ? 'bg-white/20' : n > 0 ? f.style.badge : 'bg-[#F4EFEA]'}`}>{n}</span>
+              </button>
+            );
+          })}
           <span aria-hidden className="shrink-0 my-1.5 w-px bg-[#E7DFD6]" />
           {[{ id: '', label: 'All' }, ...LEAD_STAGES].map((s) => {
-            const active = !verifying && stage === s.id;
+            const active = !approving && stage === s.id;
             const n = s.id ? (counts[s.id] ?? 0) : total;
             return (
               <button
@@ -334,10 +365,10 @@ export const LeadsPage: React.FC<{
               <div className="w-12 h-12 rounded-full bg-[#F4EFEA] text-[#9E7D53] flex items-center justify-center">
                 <Inbox className="w-6 h-6" />
               </div>
-              <p className="mt-4 font-serif text-xl">{verifying && !source && !query ? 'No payments to verify' : filtered ? 'No leads match these filters' : 'No leads yet'}</p>
+              <p className="mt-4 font-serif text-xl">{approving && !source && !query ? approving.empty.title : filtered ? 'No leads match these filters' : 'No leads yet'}</p>
               <p className="mt-1 max-w-md text-sm text-[#6A5F56]">
-                {verifying && !source && !query
-                  ? 'When a customer sends their advance payment screenshot on WhatsApp, their booking appears here for you to check and approve.'
+                {approving && !source && !query
+                  ? approving.empty.text
                   : filtered
                     ? 'Try another stage or source, or clear the search.'
                     : 'New enquiries from your Instagram and Facebook ads, the website booking form and the WhatsApp assistant will appear here automatically.'}

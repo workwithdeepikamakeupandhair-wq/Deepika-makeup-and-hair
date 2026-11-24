@@ -18,8 +18,11 @@ export const SOURCE_STYLE: Record<string, { pill: string; dot: string }> = {
   website: { pill: 'bg-[#F4EFEA] text-[#7D6243]', dot: 'bg-[#C5A880]' },
 };
 
-/** WhatsApp booking stages (bookingFlow.ts): waiting for the advance, payment to check, confirmed. */
+/** WhatsApp booking stages (bookingFlow.ts): enquiry to approve, not available, pricing sent, waiting for the advance, payment to check, confirmed. */
 export const BOOKING_STATUS_STYLE: Record<string, string> = {
+  enquiry_review: 'bg-[#E8F0FE] text-[#2B5AB0] border-[#CFDDF8]',
+  not_available: 'bg-[#F1EEEB] text-[#6A5F56] border-[#E2DCD6]',
+  quoted: 'bg-[#F2ECFB] text-[#6B3FB0] border-[#DFD2F3]',
   awaiting_payment: 'bg-[#FFF5D9] text-[#8A6100] border-[#F3E2AE]',
   payment_review: 'bg-[#FCE8F3] text-[#B4236E] border-[#F5C6DE]',
   confirmed: 'bg-[#E4F4EA] text-[#1F7A45] border-[#C7E7D3]',

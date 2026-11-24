@@ -1,13 +1,17 @@
 /**
  * The WhatsApp booking journey, shared by DMH API and the dashboard.
  *
- * Pooja (the WhatsApp assistant) checks the date and time on the calendar, sends the quotation, collects the details
- * and works out who does the makeup from the event's ZIP code (Deepika herself in the Atlanta area, one of her senior
- * artists outside it). She then asks for the 25% advance. The customer sends a payment screenshot, and the team
- * checks it and approves the booking in the dashboard, which sends the customer their confirmation.
+ * Pooja (the WhatsApp assistant, Deepika's manager) welcomes the customer with the enquiry form. Once it's filled in,
+ * the team reviews the enquiry (in the dashboard, or with a tap on WhatsApp). On approval the customer is told who
+ * does the makeup, from the event's city (Deepika herself in the Atlanta area, one of her senior artists outside it),
+ * and gets that artist's prices. Pooja then asks for the 25% advance. The customer sends a payment screenshot, and
+ * the team checks it and approves the booking, which sends the customer their confirmation.
  */
 
 export const BOOKING_STATUSES = [
+  { id: 'enquiry_review', label: 'Enquiry to approve' },
+  { id: 'not_available', label: 'Not available' },
+  { id: 'quoted', label: 'Approved · pricing sent' },
   { id: 'awaiting_payment', label: 'Waiting for advance' },
   { id: 'payment_review', label: 'Payment to verify' },
   { id: 'confirmed', label: 'Confirmed' },
@@ -15,7 +19,9 @@ export const BOOKING_STATUSES = [
 
 export type BookingStatus = (typeof BOOKING_STATUSES)[number]['id'];
 export const BOOKING_STATUS_IDS: readonly string[] = BOOKING_STATUSES.map((s) => s.id);
-export const bookingStatusLabel = (id: string | null) => BOOKING_STATUSES.find((s) => s.id === id)?.label ?? 'Collecting details';
+export const bookingStatusLabel = (id: string | null) => BOOKING_STATUSES.find((s) => s.id === id)?.label ?? 'Filling in the enquiry';
+/** The stages from the advance request on: the booking has a price, and Deepika's time is held or taken. */
+export const PAYMENT_STAGES: readonly BookingStatus[] = ['awaiting_payment', 'payment_review', 'confirmed'];
 
 export type Artist = 'deepika' | 'senior';
 export const ARTIST_LABELS: Record<Artist, string> = { deepika: 'Deepika', senior: 'Senior artist' };
@@ -44,13 +50,31 @@ export interface SlotCheck {
   conflicts: string[];
 }
 
+/** The enquiry form's answers (the welcome message lists the questions). */
+export interface Enquiry {
+  /** "Event Start Time", "18:00" */
+  eventStartTime: string | null;
+  /** The city or town of the venue, which decides the artist */
+  eventCity: string | null;
+  bridalCount: number | null;
+  groomCount: number | null;
+  nonBridalCount: number | null;
+  /** "Number of Events / Functions" */
+  eventsCount: number | null;
+}
+
 /** Everything the dashboard shows about one lead's WhatsApp booking (GET /api/admin/leads/:id/booking). */
 export interface BookingDetails {
   status: BookingStatus | null;
   eventType: string | null;
-  /** "08:00" */
+  /** The form's "Makeup Ready Time / Reporting Time", "08:00": the time the booking takes on the calendar */
   eventTime: string | null;
-  eventZip: string | null;
+  enquiry: Enquiry;
+  enquirySubmittedAt: string | null;
+  enquiryReviewedAt: string | null;
+  enquiryReviewedByName: string | null;
+  /** Who the event's location points to under the current Settings (decided for good when the enquiry is approved) */
+  artistForLocation: Artist | null;
   artist: Artist | null;
   /** A phone number other than their WhatsApp one, if they gave it */
   contactPhone: string | null;
@@ -76,25 +100,66 @@ export interface BookingSettings {
   paymentDetails: string;
   /** How long one booking takes on the calendar, in hours. */
   appointmentHours: number;
-  /** ZIP codes (or their first 3–4 digits) of the Atlanta service area, where Deepika does the makeup herself. */
-  atlantaZipPrefixes: string[];
   /**
-   * WhatsApp numbers (international, e.g. "+917022908519") that get each payment screenshot with the booking details
-   * and can approve it there with a tap.
+   * Cities, towns and neighbourhoods of the Atlanta service area, where Deepika does the makeup herself. An event whose
+   * location names one of them gets Deepika; anywhere else gets one of her senior artists.
+   */
+  atlantaAreas: string[];
+  /**
+   * WhatsApp numbers (international, e.g. "+917022908519") that get each new enquiry and each payment screenshot, with
+   * the details, and can approve them there with a tap.
    */
   approverWhatsapp: string[];
 }
 
-/**
- * Until the team saves its own settings. The ZIP prefixes are the US Postal Service's Atlanta-area mail centres
- * (300–303 metro Atlanta, 311 and 399 Atlanta's own business ZIP codes).
- */
+/** Until the team saves its own settings: Atlanta, its neighbourhoods, and the cities and towns of metro Atlanta. */
+export const DEFAULT_ATLANTA_AREAS = [
+  'Atlanta', 'Buckhead', 'Midtown', 'Sandy Springs', 'Dunwoody', 'Brookhaven', 'Chamblee', 'Doraville', 'Decatur', 'Tucker',
+  'Stone Mountain', 'Lithonia', 'Clarkston', 'Norcross', 'Peachtree Corners', 'Duluth', 'Suwanee', 'Lawrenceville', 'Lilburn',
+  'Snellville', 'Buford', 'Sugar Hill', 'Johns Creek', 'Alpharetta', 'Milton', 'Roswell', 'Cumming', 'Marietta', 'Smyrna',
+  'Vinings', 'Kennesaw', 'Acworth', 'Woodstock', 'Mableton', 'Austell', 'Powder Springs', 'Douglasville', 'East Point',
+  'College Park', 'Hapeville', 'Union City', 'Fairburn', 'Forest Park', 'Jonesboro', 'Morrow', 'Riverdale', 'Stockbridge',
+  'McDonough', 'Fayetteville', 'Peachtree City', 'Conyers',
+];
+
 export const DEFAULT_BOOKING_SETTINGS: BookingSettings = {
   paymentDetails: '',
   appointmentHours: 2,
-  atlantaZipPrefixes: ['300', '301', '302', '303', '311', '399'],
+  atlantaAreas: DEFAULT_ATLANTA_AREAS,
   approverWhatsapp: [],
 };
+
+/** Letters only, single spaces, lower case: "  St. Mary's,  GA" → "st mary s ga". */
+const placeWords = (s: string) => ` ${s.toLowerCase().normalize('NFKD').replace(/[^a-z]+/g, ' ').trim()} `;
+
+/**
+ * Whether a place (a city, venue or address, as the customer wrote it) names somewhere in the Atlanta service area:
+ * one of the area's names appears in it as whole words ("Hilton, Alpharetta GA" → Alpharetta).
+ */
+export function inAtlantaArea(place: string, areas: readonly string[]): boolean {
+  const text = placeWords(place);
+  return areas.some((area) => {
+    const name = placeWords(area);
+    return name.trim().length > 0 && text.includes(name);
+  });
+}
+
+/** A US state other than Georgia, written as its postal code: "Roswell, NM", "Duluth MN 55802". Upper case only. */
+const OTHER_STATE = /(?:^|[\s,])(A[LKZR]|C[AOT]|D[EC]|FL|HI|I[DLNA]|K[SY]|LA|M[EDAINSOT]|N[EVHJMYCD]|O[HKR]|PA|RI|S[CD]|T[NX]|UT|V[TA]|W[AVIY])(?=$|[\s,.]|\d)/;
+
+/**
+ * Who does the makeup for an event here: Deepika herself in the Atlanta service area, one of her senior artists
+ * anywhere else. `state` is the US state (or country) the customer gave, if any: anything but Georgia is outside,
+ * so "Roswell, NM" isn't Roswell near Atlanta. Null until there's a place to go by.
+ */
+export function artistForPlace(place: { city: string | null; state?: string | null; location: string | null }, areas: readonly string[]): Artist | null {
+  const where = [place.city, place.location].filter(Boolean).join(', ');
+  if (!where.trim()) return null;
+  const state = place.state?.trim() ?? '';
+  if (state && !/^(ga|georgia)$/i.test(state.replace(/[^a-z]/gi, ''))) return 'senior';
+  if (OTHER_STATE.test(where)) return 'senior';
+  return inAtlantaArea(where, areas) ? 'deepika' : 'senior';
+}
 
 /** A time the team marked as taken on one day. */
 export interface TimeBlock {

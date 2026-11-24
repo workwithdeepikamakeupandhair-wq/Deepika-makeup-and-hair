@@ -11,7 +11,7 @@ import { getDb } from '../db.js';
 import { asyncHandler, cleanString, HttpError, rateLimit } from '../http.js';
 import { LEAD_COLUMNS, LEAD_FROM, toLead, type LeadRow } from '../leads.js';
 import { getBookingSettings, parseBookingSettings, saveBookingSettings } from '../settings.js';
-import { sendToCustomer } from '../whatsappBot.js';
+import { answerEnquiry, sendToCustomer } from '../whatsappBot.js';
 import { approveBooking, BookingActionError, bookingDetails, paymentProof, reopenPayment } from '../whatsappBooking.js';
 import { paymentNotVerifiedMessage } from '../whatsappQuotes.js';
 
@@ -67,17 +67,21 @@ adminRouter.get(
   }),
 );
 
-/** WhatsApp bookings whose payment screenshot the team still has to check. */
-async function paymentsToVerify(): Promise<number> {
-  const { rows } = await getDb().query<{ n: number }>(`SELECT count(*)::int AS n FROM bookings WHERE booking_status = 'payment_review' AND status <> 'lost'`);
-  return rows[0].n;
+/** What waits for the team: WhatsApp enquiries to approve, and payment screenshots to check. */
+async function waitingForTeam(): Promise<{ enquiriesToApprove: number; paymentsToVerify: number }> {
+  const { rows } = await getDb().query<{ enquiries: number; payments: number }>(
+    `SELECT count(*) FILTER (WHERE booking_status = 'enquiry_review')::int AS enquiries,
+            count(*) FILTER (WHERE booking_status = 'payment_review')::int AS payments
+       FROM bookings WHERE booking_status IN ('enquiry_review', 'payment_review') AND status <> 'lost'`,
+  );
+  return { enquiriesToApprove: rows[0].enquiries, paymentsToVerify: rows[0].payments };
 }
 
 /** GET /api/admin/summary → what needs the team's attention (polled by the header's badge). */
 adminRouter.get(
   '/summary',
   asyncHandler(async (_req, res) => {
-    res.json({ paymentsToVerify: await paymentsToVerify() });
+    res.json(await waitingForTeam());
   }),
 );
 
@@ -97,11 +101,13 @@ adminRouter.get(
       AND ($2::text IS NULL OR b.full_name ILIKE $2 OR b.phone ILIKE $2 OR b.email ILIKE $2
            OR b.campaign ILIKE $2 OR b.service ILIKE $2 OR b.event_location ILIKE $2)`;
     const db = getDb();
-    const [list, counts, toVerify] = await Promise.all([
+    // Waiting longest first, for the two lists of things to approve
+    const waitingOrder = booking === 'payment_review' ? 'b.payment_submitted_at ASC NULLS LAST,' : booking === 'enquiry_review' ? 'b.enquiry_submitted_at ASC NULLS LAST,' : '';
+    const [list, counts, waiting] = await Promise.all([
       db.query<LeadRow>(
         `SELECT ${LEAD_COLUMNS} FROM ${LEAD_FROM}
           WHERE ${where} AND ($3::text IS NULL OR b.status = $3) AND ($5::text IS NULL OR (b.booking_status = $5 AND b.status <> 'lost'))
-          ORDER BY ${booking === 'payment_review' ? 'b.payment_submitted_at ASC NULLS LAST,' : ''} b.created_at DESC, b.id DESC
+          ORDER BY ${waitingOrder} b.created_at DESC, b.id DESC
           LIMIT ${PAGE_SIZE + 1} OFFSET $4`,
         [source, search, stage, offset, booking],
       ),
@@ -109,13 +115,13 @@ adminRouter.get(
         `SELECT b.status, count(*)::int AS n FROM bookings b WHERE ${where} GROUP BY b.status`,
         [source, search],
       ),
-      paymentsToVerify(),
+      waitingForTeam(),
     ]);
     res.json({
       leads: list.rows.slice(0, PAGE_SIZE).map(toLead),
       hasMore: list.rows.length > PAGE_SIZE,
       counts: Object.fromEntries(counts.rows.map((r) => [r.status, r.n])),
-      paymentsToVerify: toVerify,
+      ...waiting,
     });
   }),
 );
@@ -183,6 +189,34 @@ async function messageCustomer(waId: string | null, message: string): Promise<{ 
     return { sent: false, error: err instanceof Error ? err.message : 'Sending failed.' };
   }
 }
+
+/**
+ * POST /api/admin/leads/:id/enquiry { decision: "approve" | "decline" } → the team's answer to a WhatsApp enquiry.
+ * Approve: the event's place decides the artist, and the customer gets the news with that artist's prices.
+ * Decline: the customer is told the team isn't available.
+ */
+adminRouter.post(
+  '/leads/:id/enquiry',
+  asyncHandler(async (req, res) => {
+    const id = leadId(req.params.id);
+    const decision = req.body?.decision;
+    if (decision !== 'approve' && decision !== 'decline') throw new HttpError(400, 'Choose approve or decline.');
+    let result;
+    try {
+      result = await answerEnquiry(id, decision, req.adminUser!.id);
+    } catch (err) {
+      if (err instanceof BookingActionError) throw new HttpError(409, err.message);
+      throw err;
+    }
+    console.log(`[admin] ${req.adminUser!.name} ${decision === 'approve' ? 'approved' : 'marked not available'} enquiry #${id}`);
+    res.json({
+      lead: await leadById(id),
+      booking: await bookingDetails(id),
+      message: { sent: result.sent, ...(result.error ? { error: result.error } : {}) },
+      teamQuotes: result.teamQuotes,
+    });
+  }),
+);
 
 /** POST /api/admin/leads/:id/approve → the booking is confirmed and the customer gets the confirmation on WhatsApp. */
 adminRouter.post(

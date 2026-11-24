@@ -29,12 +29,18 @@ export interface LeadsQuery {
   offset?: number;
 }
 
-export interface LeadsPageData {
+/** What waits for the team: the header's badge and the two "to approve" filters on Leads. */
+export interface WaitingCounts {
+  /** WhatsApp enquiry forms waiting for the team's approval */
+  enquiriesToApprove: number;
+  /** WhatsApp bookings whose payment screenshot is waiting to be checked */
+  paymentsToVerify: number;
+}
+
+export interface LeadsPageData extends WaitingCounts {
   leads: Lead[];
   hasMore: boolean;
   counts: Record<string, number>;
-  /** WhatsApp bookings whose payment screenshot is waiting to be checked */
-  paymentsToVerify: number;
 }
 
 export interface CalendarData {
@@ -51,6 +57,8 @@ export interface BookingActionResult {
   lead: Lead;
   booking: BookingDetails;
   message: { sent: boolean; error?: string };
+  /** Approving an enquiry: occasions with no price list for the customer's artist, for the team to quote */
+  teamQuotes?: string[];
 }
 
 /** Where a payment screenshot can be opened (same origin, so the login cookie goes along). */
@@ -63,7 +71,7 @@ export const api = {
   logout: () => request('/logout', { method: 'POST' }),
   users: () => request<{ users: AdminUser[] }>('/users').then((d) => d.users),
   /** What needs the team's attention (the header's badge). */
-  summary: () => request<{ paymentsToVerify: number }>('/summary'),
+  summary: () => request<WaitingCounts>('/summary'),
   leads: (query: LeadsQuery) => {
     const params = new URLSearchParams();
     for (const [k, v] of Object.entries(query)) if (v !== undefined && v !== '') params.set(k, String(v));
@@ -73,6 +81,9 @@ export const api = {
     request<{ lead: Lead }>(`/leads/${id}`, { method: 'PATCH', body: JSON.stringify(changes) }).then((d) => d.lead),
   /** The lead's WhatsApp booking: quote, artist, payment screenshots and the calendar check. */
   booking: (id: string) => request<{ booking: BookingDetails }>(`/leads/${id}/booking`).then((d) => d.booking),
+  /** The team's answer to a WhatsApp enquiry: approved (the customer gets their artist and prices) or not available. */
+  answerEnquiry: (id: string, decision: 'approve' | 'decline') =>
+    request<BookingActionResult>(`/leads/${id}/enquiry`, { method: 'POST', body: JSON.stringify({ decision }) }),
   /** Confirms the booking; the customer gets the confirmation on WhatsApp. */
   approveBooking: (id: string) => request<BookingActionResult>(`/leads/${id}/approve`, { method: 'POST' }),
   /** The payment couldn't be verified: the customer is asked on WhatsApp to send it again. */

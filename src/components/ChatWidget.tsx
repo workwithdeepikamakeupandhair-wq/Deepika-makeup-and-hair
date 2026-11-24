@@ -20,7 +20,7 @@ interface ChatWidgetProps {
 
 const GREETING: ChatMessage = {
   role: 'assistant',
-  content: `Hi there! 😊 I'm Pooja, ${BUSINESS_INFO.artist.split(' ')[0]}'s personal assistant. Ask me about bridal packages, makeup & hair services, masterclasses, or how to book.`,
+  content: `Hi there! 😊 I'm Pooja, ${BUSINESS_INFO.artist.split(' ')[0]}'s manager. Ask me about bridal packages, makeup & hair services, masterclasses, or how to book.`,
 };
 
 const SUGGESTIONS = [

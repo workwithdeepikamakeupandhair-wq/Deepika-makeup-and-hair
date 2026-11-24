@@ -5,7 +5,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { AdminUser } from '../data/leads';
 import { AdminHeader, ADMIN_PAGES, pageFromPath, type AdminPage } from './AdminHeader';
-import { api, NotLoggedIn } from './api';
+import { api, NotLoggedIn, type WaitingCounts } from './api';
 import { CalendarPage } from './CalendarPage';
 import { LeadsPage } from './LeadsPage';
 import { LoginPage } from './LoginPage';
@@ -17,14 +17,15 @@ const TITLES: Record<AdminPage, string> = {
   settings: 'Settings · Deepika Makeup & Hair',
 };
 
-/** How often the payments-to-verify badge is refreshed while the tab is visible. */
+/** How often the to-approve badge is refreshed while the tab is visible. */
 const SUMMARY_EVERY_MS = 60_000;
 
 export default function AdminApp() {
   // undefined while checking the session cookie, null when logged out
   const [user, setUser] = useState<AdminUser | null | undefined>(undefined);
   const [page, setPage] = useState<AdminPage>(() => pageFromPath(window.location.pathname));
-  const [paymentsToVerify, setPaymentsToVerify] = useState(0);
+  const [waiting, setWaiting] = useState<WaitingCounts>({ enquiriesToApprove: 0, paymentsToVerify: 0 });
+  const toApprove = waiting.enquiriesToApprove + waiting.paymentsToVerify;
 
   useEffect(() => {
     // Keep the team area out of search engines
@@ -42,14 +43,14 @@ export default function AdminApp() {
   }, []);
 
   useEffect(() => {
-    document.title = `${paymentsToVerify > 0 ? `(${paymentsToVerify}) ` : ''}${TITLES[page]}`;
-  }, [page, paymentsToVerify]);
+    document.title = `${toApprove > 0 ? `(${toApprove}) ` : ''}${TITLES[page]}`;
+  }, [page, toApprove]);
 
   const loggedOut = useCallback(() => setUser(null), []);
 
   const refreshSummary = useCallback(() => {
     api.summary().then(
-      (s) => setPaymentsToVerify(s.paymentsToVerify),
+      (s) => setWaiting({ enquiriesToApprove: s.enquiriesToApprove, paymentsToVerify: s.paymentsToVerify }),
       (err) => {
         if (err instanceof NotLoggedIn) setUser(null);
       },
@@ -93,13 +94,13 @@ export default function AdminApp() {
   if (!user) return <LoginPage onLoggedIn={setUser} />;
   return (
     <div className="min-h-screen bg-[#FAF7F2] font-sans text-[#1D1714]">
-      <AdminHeader user={user} page={page} paymentsToVerify={paymentsToVerify} onNavigate={navigate} onLogout={logout} />
+      <AdminHeader user={user} page={page} waiting={waiting} onNavigate={navigate} onLogout={logout} />
       {page === 'calendar' ? (
         <CalendarPage onLoggedOut={loggedOut} />
       ) : page === 'settings' ? (
         <SettingsPage onLoggedOut={loggedOut} />
       ) : (
-        <LeadsPage onLoggedOut={loggedOut} onPaymentsToVerify={setPaymentsToVerify} onBookingChanged={refreshSummary} />
+        <LeadsPage onLoggedOut={loggedOut} onWaiting={setWaiting} onBookingChanged={refreshSummary} />
       )}
     </div>
   );

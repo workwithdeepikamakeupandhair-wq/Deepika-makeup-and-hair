@@ -433,7 +433,8 @@ export async function calendarBetween(
     db.query<{ id: string; full_name: string; service: string; date: string; start: string; booking_status: BookingStatus; artist: Artist | null }>(
       `SELECT id::text, full_name, service, to_char(event_date, 'YYYY-MM-DD') AS date, to_char(event_time, 'HH24:MI') AS start, booking_status, artist
          FROM bookings
-        WHERE event_date BETWEEN $1 AND $2 AND event_time IS NOT NULL AND booking_status IS NOT NULL AND status <> 'lost'
+        WHERE event_date BETWEEN $1 AND $2 AND event_time IS NOT NULL AND status <> 'lost'
+          AND booking_status IN ('awaiting_payment', 'payment_review', 'confirmed')
         ORDER BY event_date, event_time
         LIMIT 500`,
       [from, to],

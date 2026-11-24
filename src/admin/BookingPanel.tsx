@@ -1,11 +1,12 @@
 /**
- * The "WhatsApp booking" part of the lead panel: what Pooja booked (date and time, place, artist, quote and advance),
- * whether the time is still free on the calendar, the payment screenshots, and the team's Approve / ask-again buttons.
- * Approving confirms the booking and sends the customer their confirmation on WhatsApp.
+ * The "WhatsApp booking" part of the lead panel: the customer's enquiry form, who does the makeup, the quote and
+ * advance, whether the time is still free on Deepika's calendar, the payment screenshots, and the team's buttons:
+ * - an enquiry waiting for review: Approve (the customer gets their artist and prices) or Not available;
+ * - a payment screenshot: Approve booking (the customer gets the confirmation) or Payment not received.
  */
 import React, { useCallback, useEffect, useState } from 'react';
-import { AlertTriangle, BadgeCheck, CalendarCheck, CalendarX, Clock, FileText, RotateCcw } from 'lucide-react';
-import { ARTIST_LABELS, money, timeLabel, type BookingDetails } from '../data/bookingFlow';
+import { AlertTriangle, BadgeCheck, CalendarCheck, CalendarX, Clock, FileText, RotateCcw, Send, XCircle } from 'lucide-react';
+import { ARTIST_LABELS, money, PAYMENT_STAGES, timeLabel, type Artist, type BookingDetails } from '../data/bookingFlow';
 import type { Lead } from '../data/leads';
 import { api, NotLoggedIn, paymentProofUrl } from './api';
 import { BookingStatusPill } from './controls';
@@ -17,8 +18,24 @@ const WHATSAPP_WINDOW_MS = 24 * 3_600_000;
 /** Images the browser can show inline (HEIC, PDFs and anything else open as files). */
 const isViewableImage = (type: string) => /^image\/(jpeg|png|webp|gif)$/i.test(type);
 
-/** Worth showing: the lead has a WhatsApp booking in progress, not just an enquiry. */
-export const hasBooking = (b: BookingDetails) => Boolean(b.status || b.items.length || b.eventTime);
+/** Worth showing: the lead has a WhatsApp enquiry or booking in progress, not just a chat. */
+export const hasBooking = (b: BookingDetails) =>
+  Boolean(b.status || b.items.length || b.eventTime || b.enquiry.eventStartTime || b.enquiry.eventCity || b.enquiry.eventsCount !== null);
+
+/** "1 bridal · 1 groom · 3 non-bridal" */
+const people = (b: BookingDetails) =>
+  [
+    [b.enquiry.bridalCount, 'bridal'],
+    [b.enquiry.groomCount, 'groom'],
+    [b.enquiry.nonBridalCount, 'non-bridal'],
+  ]
+    .filter(([n]) => n !== null)
+    .map(([n, what]) => `${n} ${what}`)
+    .join(' · ');
+
+const ARTIST_PLACE: Record<Artist, string> = { deepika: 'Atlanta area', senior: 'outside Atlanta' };
+
+type Action = 'approve' | 'reopen' | 'enquiry_approve' | 'enquiry_decline';
 
 const Line: React.FC<{ label: string; children: React.ReactNode }> = ({ label, children }) => (
   <div className="grid grid-cols-[110px_1fr] gap-3 py-2 border-b border-[#F1ECE6] last:border-0">
@@ -35,7 +52,7 @@ export const BookingPanel: React.FC<{
 }> = ({ lead, onChanged, onLoggedOut }) => {
   const [booking, setBooking] = useState<BookingDetails | null>(null);
   const [loadError, setLoadError] = useState('');
-  const [acting, setActing] = useState<'approve' | 'reopen' | null>(null);
+  const [acting, setActing] = useState<Action | null>(null);
   const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
   const [now] = useState(() => Date.now());
 
@@ -69,28 +86,57 @@ export const BookingPanel: React.FC<{
   const b = booking;
   const name = lead.fullName;
   const waitingOnPayment = b.status === 'awaiting_payment' || b.status === 'payment_review';
+  const reviewing = b.status === 'enquiry_review';
   const lastMessage = b.lastCustomerMessageAt ? new Date(b.lastCustomerMessageAt).getTime() : null;
   const outsideWindow = lastMessage === null || now - lastMessage > WHATSAPP_WINDOW_MS;
+  // The artist: decided when the enquiry is approved; until then, who the location points to under Settings
+  const artist = b.artist ?? b.artistForLocation;
+  const notGiven = <span className="text-[#A39689]">Not given yet</span>;
 
-  const act = async (kind: 'approve' | 'reopen') => {
-    const question =
-      kind === 'reopen'
-        ? `Ask ${name} to send the payment again?\n\nThey get a WhatsApp message saying the advance payment couldn't be verified yet, with a request to share the screenshot again.`
-        : b.status === 'awaiting_payment'
-          ? `No payment screenshot was received for this booking.\n\nApprove it anyway (for example, if the advance${b.advance !== null ? ` of ${money(b.advance)}` : ''} reached you another way)? ${name} gets the booking confirmation on WhatsApp straight away.`
-          : `Approve this booking?\n\nOnly approve once you've checked that the advance${b.advance !== null ? ` of ${money(b.advance)}` : ''} has arrived. ${name} gets the booking confirmation on WhatsApp straight away.`;
+  const act = async (kind: Action) => {
+    const advance = b.advance !== null ? ` of ${money(b.advance)}` : '';
+    const question = {
+      enquiry_approve: `Approve ${name}'s enquiry?\n\nThey get a WhatsApp message that ${
+        b.artistForLocation === 'deepika' ? 'Deepika herself (Atlanta area)' : 'one of Deepika’s senior artists (outside Atlanta)'
+      } will do their makeup, with the prices.`,
+      enquiry_decline: `Mark ${name}'s enquiry as Not available?\n\nThey get a WhatsApp message that we're not available for their event${
+        lead.eventDate ? ` on ${eventDateLabel(lead.eventDate)}` : ''
+      }, and can send another date.`,
+      reopen: `Ask ${name} to send the payment again?\n\nThey get a WhatsApp message saying the advance payment couldn't be verified yet, with a request to share the screenshot again.`,
+      approve:
+        b.status === 'awaiting_payment'
+          ? `No payment screenshot was received for this booking.\n\nApprove it anyway (for example, if the advance${advance} reached you another way)? ${name} gets the booking confirmation on WhatsApp straight away.`
+          : `Approve this booking?\n\nOnly approve once you've checked that the advance${advance} has arrived. ${name} gets the booking confirmation on WhatsApp straight away.`,
+    }[kind];
     if (!window.confirm(question)) return;
     setActing(kind);
     setResult(null);
     try {
-      const r = kind === 'approve' ? await api.approveBooking(lead.id) : await api.reopenPayment(lead.id);
+      const r =
+        kind === 'enquiry_approve' || kind === 'enquiry_decline'
+          ? await api.answerEnquiry(lead.id, kind === 'enquiry_approve' ? 'approve' : 'decline')
+          : kind === 'approve'
+            ? await api.approveBooking(lead.id)
+            : await api.reopenPayment(lead.id);
       setBooking(r.booking);
       onChanged(r.lead);
-      const done = kind === 'approve' ? 'Booking confirmed.' : 'The booking is waiting for the advance again.';
+      const done = {
+        enquiry_approve: 'Enquiry approved.',
+        enquiry_decline: 'Enquiry marked Not available.',
+        approve: 'Booking confirmed.',
+        reopen: 'The booking is waiting for the advance again.',
+      }[kind];
+      const told = {
+        enquiry_approve: 'The customer got their artist and the prices on WhatsApp.',
+        enquiry_decline: "The customer was told on WhatsApp that we're not available.",
+        approve: 'The confirmation was sent to the customer on WhatsApp.',
+        reopen: 'The customer was asked on WhatsApp to send the payment again.',
+      }[kind];
+      const teamQuotes = r.teamQuotes?.length ? ` There's no price list for ${r.teamQuotes.join(', ').replace(/_/g, ' ')} with this artist: please send them that quote yourself.` : '';
       setResult(
         r.message.sent
-          ? { ok: true, text: `${done} ${kind === 'approve' ? 'The confirmation was sent to the customer on WhatsApp.' : 'The customer was asked on WhatsApp to send the payment again.'}` }
-          : { ok: false, text: `${done} But the WhatsApp message couldn't be sent${r.message.error ? ` (${r.message.error})` : ''}. Please message the customer directly.` },
+          ? { ok: !teamQuotes, text: `${done} ${told}${teamQuotes}` }
+          : { ok: false, text: `${done} But the WhatsApp message couldn't be sent${r.message.error ? ` (${r.message.error})` : ''}. Please message the customer directly.${teamQuotes}` },
       );
     } catch (err) {
       if (err instanceof NotLoggedIn) onLoggedOut();
@@ -102,6 +148,15 @@ export const BookingPanel: React.FC<{
 
   const slot = b.slot;
   const slotFree = slot.status === 'open';
+  const outsideWindowNote = (after: string) => (
+    <p className="mt-3 flex gap-2 rounded-xl border border-[#F3E2AE] bg-[#FFF8E6] px-3.5 py-2.5 text-xs leading-relaxed text-[#8A6100]">
+      <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" aria-hidden />
+      <span>
+        The customer's last WhatsApp message was {lastMessage === null ? 'not found' : 'more than 24 hours ago'}, so WhatsApp may not deliver the automatic message. After {after}, also
+        message them directly with the WhatsApp button above.
+      </span>
+    </p>
+  );
 
   return (
     <section aria-labelledby="booking-title" className="rounded-2xl border border-[#E7DFD6] bg-white">
@@ -112,30 +167,86 @@ export const BookingPanel: React.FC<{
         <BookingStatusPill status={b.status} />
       </div>
 
+      {/* The enquiry form's answers */}
       <div className="px-4">
         <dl>
-          <Line label="When">
-            {[eventDateLabel(lead.eventDate), timeLabel(b.eventTime)].filter(Boolean).join(' at ') || <span className="text-[#A39689]">Not given yet</span>}
-          </Line>
-          <Line label="Where">
-            {lead.eventLocation || <span className="text-[#A39689]">No address yet</span>}
-            {b.eventZip && <span className="text-[#6A5F56]"> · ZIP {b.eventZip}</span>}
-          </Line>
-          <Line label="Artist">
-            {b.artist ? (
-              <>
-                {ARTIST_LABELS[b.artist]}
-                <span className="text-xs text-[#6A5F56]"> ({b.artist === 'deepika' ? 'Atlanta area' : 'outside the Atlanta area'})</span>
-              </>
-            ) : (
-              <span className="text-[#A39689]">Known once the ZIP code is given</span>
+          {b.eventType && <Line label="Occasion">{b.eventType}</Line>}
+          <Line label="Event date">{eventDateLabel(lead.eventDate) ?? notGiven}</Line>
+          <Line label="Location">
+            {lead.eventLocation || notGiven}
+            {b.enquiry.eventCity && !(lead.eventLocation ?? '').toLowerCase().includes(b.enquiry.eventCity.toLowerCase()) && (
+              <span className="text-[#6A5F56]"> · {b.enquiry.eventCity}</span>
             )}
           </Line>
-          {b.eventType && <Line label="Event">{b.eventType}</Line>}
+          <Line label="Event starts">{timeLabel(b.enquiry.eventStartTime) || notGiven}</Line>
+          <Line label="Ready / reporting">{timeLabel(b.eventTime) || notGiven}</Line>
+          <Line label="Makeup for">{people(b) || notGiven}</Line>
+          <Line label="Events">{b.enquiry.eventsCount ?? notGiven}</Line>
+          {b.specialRequirements && <Line label="Requirements">{b.specialRequirements}</Line>}
+          <Line label="Artist">
+            {artist ? (
+              <>
+                {ARTIST_LABELS[artist]}
+                <span className="text-xs text-[#6A5F56]"> ({ARTIST_PLACE[artist]})</span>
+                {!b.artist && <span className="block text-xs text-[#6A5F56]">Decided when you approve the enquiry, from the location.</span>}
+                {!b.artist && artist === 'senior' && (
+                  <span className="block text-xs text-[#8A6100]">
+                    The location doesn't name a place in your Atlanta service area. If it is in Atlanta, add the city in Settings before approving.
+                  </span>
+                )}
+              </>
+            ) : (
+              <span className="text-[#A39689]">Known once the location is given</span>
+            )}
+          </Line>
           {b.contactPhone && <Line label="Contact phone">{b.contactPhone}</Line>}
-          {b.specialRequirements && <Line label="Requests">{b.specialRequirements}</Line>}
         </dl>
       </div>
+
+      {/* The team's answer to the enquiry */}
+      {(reviewing || b.enquirySubmittedAt) && (
+        <div className="border-t border-[#F1ECE6] px-4 py-4">
+          <h4 className="text-xs uppercase tracking-[0.12em] text-[#9E7D53]">Enquiry</h4>
+          <ul className="mt-2 space-y-1 text-xs text-[#6A5F56]">
+            {b.enquirySubmittedAt && (
+              <li className="flex items-center gap-1.5">
+                <Clock className="w-3.5 h-3.5" aria-hidden /> Form completed {fullDateTime(b.enquirySubmittedAt)}
+              </li>
+            )}
+            {b.enquiryReviewedAt && (
+              <li className={`flex items-center gap-1.5 ${b.status === 'not_available' ? '' : 'text-[#1F7A45]'}`}>
+                {b.status === 'not_available' ? <XCircle className="w-3.5 h-3.5" aria-hidden /> : <BadgeCheck className="w-3.5 h-3.5" aria-hidden />}
+                {b.status === 'not_available' ? 'Marked Not available' : 'Approved'} {fullDateTime(b.enquiryReviewedAt)}
+                {b.enquiryReviewedByName ? ` by ${b.enquiryReviewedByName}` : ' on WhatsApp'}
+              </li>
+            )}
+          </ul>
+          {reviewing && (
+            <>
+              <p className="mt-3 text-sm text-[#3A322C]">
+                Approve to send {name} the news about their artist and the prices on WhatsApp. They were told the team would update them within two hours.
+              </p>
+              {outsideWindow && outsideWindowNote('answering')}
+              <div className="mt-4 flex flex-wrap gap-2">
+                <button
+                  onClick={() => void act('enquiry_approve')}
+                  disabled={acting !== null}
+                  className="inline-flex items-center gap-2 rounded-full bg-[#1F7A45] px-5 py-2 text-xs font-semibold uppercase tracking-[0.12em] text-white hover:bg-[#18663A] disabled:opacity-50"
+                >
+                  <Send className="w-4 h-4" aria-hidden /> {acting === 'enquiry_approve' ? 'Approving…' : 'Approve · send prices'}
+                </button>
+                <button
+                  onClick={() => void act('enquiry_decline')}
+                  disabled={acting !== null}
+                  className="inline-flex items-center gap-2 rounded-full border border-[#D9D0C5] bg-white px-4 py-2 text-xs font-medium hover:bg-[#F4EFEA] disabled:opacity-50"
+                >
+                  <XCircle className="w-3.5 h-3.5" aria-hidden /> {acting === 'enquiry_decline' ? 'Sending…' : 'Not available'}
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
 
       {/* Quote */}
       {b.items.length > 0 && (
@@ -174,35 +285,42 @@ export const BookingPanel: React.FC<{
         </div>
       )}
 
-      {/* Calendar check */}
-      <div
-        className={`mx-4 mb-4 flex gap-2.5 rounded-xl px-3.5 py-3 text-sm ${
-          slot.status === 'no_time' ? 'bg-[#F4EFEA] text-[#6A5F56]' : slotFree ? 'bg-[#EEF8F1] text-[#1F7A45]' : 'bg-[#FDECEC] text-[#B42318]'
-        }`}
-      >
-        {slotFree || slot.status === 'no_time' ? <CalendarCheck className="w-4 h-4 mt-0.5 shrink-0" aria-hidden /> : <CalendarX className="w-4 h-4 mt-0.5 shrink-0" aria-hidden />}
-        <div className="min-w-0">
-          <p className="font-medium">
-            {slot.status === 'no_time'
-              ? 'No time saved yet, so the calendar can’t be checked.'
-              : slotFree
-                ? 'Time is free on the calendar.'
-                : slot.status === 'fully_booked'
-                  ? 'The day is marked Fully booked on the calendar.'
-                  : 'This time clashes with something on the calendar:'}
-          </p>
-          {!slotFree && slot.conflicts.length > 0 && (
-            <ul className="mt-1 list-disc pl-4 text-xs">
-              {slot.conflicts.map((c) => (
-                <li key={c}>{c}</li>
-              ))}
-            </ul>
-          )}
+      {/* Deepika's calendar at the ready / reporting time (a senior artist's booking doesn't take her time) */}
+      {artist === 'senior' ? (
+        <div className="mx-4 mb-4 flex gap-2.5 rounded-xl bg-[#F4EFEA] px-3.5 py-3 text-sm text-[#6A5F56]">
+          <CalendarCheck className="w-4 h-4 mt-0.5 shrink-0" aria-hidden />
+          <p className="font-medium">A senior artist does the makeup, so Deepika's calendar isn't needed.</p>
         </div>
-      </div>
+      ) : (
+        <div
+          className={`mx-4 mb-4 flex gap-2.5 rounded-xl px-3.5 py-3 text-sm ${
+            slot.status === 'no_time' ? 'bg-[#F4EFEA] text-[#6A5F56]' : slotFree ? 'bg-[#EEF8F1] text-[#1F7A45]' : 'bg-[#FDECEC] text-[#B42318]'
+          }`}
+        >
+          {slotFree || slot.status === 'no_time' ? <CalendarCheck className="w-4 h-4 mt-0.5 shrink-0" aria-hidden /> : <CalendarX className="w-4 h-4 mt-0.5 shrink-0" aria-hidden />}
+          <div className="min-w-0">
+            <p className="font-medium">
+              {slot.status === 'no_time'
+                ? 'No date and ready time yet, so the calendar can’t be checked.'
+                : slotFree
+                  ? 'The ready / reporting time is free on the calendar.'
+                  : slot.status === 'fully_booked'
+                    ? 'The day is marked Fully booked on the calendar.'
+                    : 'This time clashes with something on the calendar:'}
+            </p>
+            {!slotFree && slot.conflicts.length > 0 && (
+              <ul className="mt-1 list-disc pl-4 text-xs">
+                {slot.conflicts.map((c) => (
+                  <li key={c}>{c}</li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Payment */}
-      {(b.status || b.proofs.length > 0) && (
+      {((b.status && PAYMENT_STAGES.includes(b.status)) || b.proofs.length > 0) && (
         <div className="border-t border-[#F1ECE6] px-4 py-4">
           <h4 className="text-xs uppercase tracking-[0.12em] text-[#9E7D53]">Payment</h4>
           <ul className="mt-2 space-y-1 text-xs text-[#6A5F56]">
@@ -252,15 +370,7 @@ export const BookingPanel: React.FC<{
             waitingOnPayment && <p className="mt-3 text-sm text-[#A39689]">No payment screenshot yet.</p>
           )}
 
-          {waitingOnPayment && outsideWindow && (
-            <p className="mt-3 flex gap-2 rounded-xl border border-[#F3E2AE] bg-[#FFF8E6] px-3.5 py-2.5 text-xs leading-relaxed text-[#8A6100]">
-              <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" aria-hidden />
-              <span>
-                The customer's last WhatsApp message was {lastMessage === null ? 'not found' : 'more than 24 hours ago'}, so WhatsApp may not deliver the automatic message. After
-                approving, also message them directly with the WhatsApp button above.
-              </span>
-            </p>
-          )}
+          {waitingOnPayment && outsideWindow && outsideWindowNote('approving')}
 
           {waitingOnPayment && (
             <div className="mt-4 flex flex-wrap gap-2">

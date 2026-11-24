@@ -1,11 +1,21 @@
 /**
- * Top bar of the team area: business name, the Leads / Calendar / Settings tabs (Leads shows how many payments wait
- * to be checked), who is logged in, and Log out.
+ * Top bar of the team area: business name, the Leads / Calendar / Settings tabs (Leads shows how many enquiries and
+ * payments wait for approval), who is logged in, and Log out.
  */
 import React from 'react';
 import { CalendarDays, ExternalLink, LogOut, Settings, Users } from 'lucide-react';
 import type { AdminUser } from '../data/leads';
 import { BUSINESS_INFO } from '../data/portfolioData';
+import type { WaitingCounts } from './api';
+
+/** "2 enquiries and 1 payment to approve" */
+const waitingLabel = (w: WaitingCounts) =>
+  [
+    w.enquiriesToApprove > 0 && `${w.enquiriesToApprove} enquir${w.enquiriesToApprove > 1 ? 'ies' : 'y'}`,
+    w.paymentsToVerify > 0 && `${w.paymentsToVerify} payment${w.paymentsToVerify > 1 ? 's' : ''}`,
+  ]
+    .filter(Boolean)
+    .join(' and ') + ' to approve';
 
 export type AdminPage = 'leads' | 'calendar' | 'settings';
 
@@ -21,11 +31,11 @@ export const pageFromPath = (path: string): AdminPage =>
 export const AdminHeader: React.FC<{
   user: AdminUser;
   page: AdminPage;
-  /** WhatsApp bookings whose payment screenshot waits to be checked: a badge on the Leads tab. */
-  paymentsToVerify: number;
+  /** WhatsApp enquiries and payment screenshots waiting for approval: a badge on the Leads tab. */
+  waiting: WaitingCounts;
   onNavigate: (page: AdminPage) => void;
   onLogout: () => void;
-}> = ({ user, page, paymentsToVerify, onNavigate, onLogout }) => (
+}> = ({ user, page, waiting, onNavigate, onLogout }) => (
   <header className="sticky top-0 z-30 border-b border-[#E7DFD6] bg-white/95 backdrop-blur">
     <div className="mx-auto flex max-w-[1400px] items-center justify-between gap-3 px-4 py-3 sm:px-6">
       <div className="flex items-center gap-3 sm:gap-6 min-w-0">
@@ -36,7 +46,7 @@ export const AdminHeader: React.FC<{
           {ADMIN_PAGES.map((p) => {
             const active = p.id === page;
             const Icon = p.icon;
-            const badge = p.id === 'leads' && paymentsToVerify > 0 ? paymentsToVerify : 0;
+            const badge = p.id === 'leads' ? waiting.enquiriesToApprove + waiting.paymentsToVerify : 0;
             return (
               <a
                 key={p.id}
@@ -56,10 +66,10 @@ export const AdminHeader: React.FC<{
                 {badge > 0 && (
                   <span
                     className="ml-0.5 inline-flex min-w-[18px] h-[18px] items-center justify-center rounded-full bg-[#D04F7A] px-1 text-[10px] font-bold tabular-nums text-white"
-                    title={`${badge} payment${badge > 1 ? 's' : ''} to verify`}
+                    title={waitingLabel(waiting)}
                   >
                     {badge}
-                    <span className="sr-only"> payment{badge > 1 ? 's' : ''} to verify</span>
+                    <span className="sr-only">: {waitingLabel(waiting)}</span>
                   </span>
                 )}
               </a>
