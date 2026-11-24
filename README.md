@@ -128,10 +128,12 @@ date, location (city & venue), event start time, makeup ready / reporting time, 
 non-bridal makeup, additional requirements, and the number of events.
 
 **The enquiry form** (`server/enquiryForm.ts`). On Twilio it's a WhatsApp form: a message with a **Fill in the form**
-button that opens fields (a date picker, text and number fields) and a **Submit** button, without leaving WhatsApp. It's
-a Twilio Content template (`twilio/flows`, `enquiryForm` in the `settings` table's "whatsapp_templates"), created by
-`server/scripts/create-approval-template.ts`, and is sent only once Meta has approved it (checked with Twilio, every 10
-minutes until then). Until then, and on Meta's Cloud API connection, the written form (`ENQUIRY_FORM`) goes instead and
+button that opens one scrolling page with every question (a date picker, text and number fields, in two sections) and
+a **Submit** button, without leaving WhatsApp. It's a Twilio Content template (`twilio/flows`, `enquiryForm` in the
+`settings` table's "whatsapp_templates"), created by `server/scripts/create-approval-template.ts`, and is sent only
+once Meta has approved it (checked with Twilio, every 10 minutes until then). An approved form can't be edited: a
+changed one is a new template (`--new form`), saved as `enquiryFormNext`, which takes over once Meta approves it while
+the old one goes on being sent. Until then, and on Meta's Cloud API connection, the written form (`ENQUIRY_FORM`) goes instead and
 customers type their answers. A submitted form reaches the Twilio webhook as `InteractiveData` (JSON); it becomes a
 customer message listing the 9 answers, which Pooja saves like typed ones. The log line "submitted the enquiry form
 (answer keys: …)" shows how the answers were named.

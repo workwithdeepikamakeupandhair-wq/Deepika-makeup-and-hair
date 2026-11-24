@@ -6,7 +6,8 @@
  * - enquiryForm: the enquiry form customers fill in inside WhatsApp (server/enquiryForm.ts).
  * Run once; a template that already exists is not created again:
  *   node node_modules/tsx/dist/cli.mjs server/scripts/create-approval-template.ts                   (create missing ones, show the status)
- *   node node_modules/tsx/dist/cli.mjs server/scripts/create-approval-template.ts --new form        (create a new form template anyway)
+ *   node node_modules/tsx/dist/cli.mjs server/scripts/create-approval-template.ts --new form        (a new version of the form: it waits as
+ *                                                                                                   "enquiryFormNext" and takes over once approved)
  *   node node_modules/tsx/dist/cli.mjs server/scripts/create-approval-template.ts --sid HX… payment (submit one created earlier)
  * Meta usually approves within minutes, at most about a day. Until then, approvals happen in the dashboard and
  * customers get the written form.
@@ -59,7 +60,9 @@ const ENQUIRY_SAMPLES: EnquiryTemplateVariables = {
   '9': '4:00 PM is free',
 };
 
-const TEMPLATES: Record<keyof WhatsAppTemplates, Record<string, unknown>> = {
+type TemplateKind = Exclude<keyof WhatsAppTemplates, 'enquiryFormNext'>;
+
+const TEMPLATES: Record<TemplateKind, Record<string, unknown>> = {
   paymentApproval: {
     friendly_name: 'dmh_payment_approval',
     language: 'en',
@@ -98,7 +101,7 @@ const TEMPLATES: Record<keyof WhatsAppTemplates, Record<string, unknown>> = {
   enquiryForm: enquiryFormTemplate(),
 };
 
-const KIND_ARG: Record<string, keyof WhatsAppTemplates> = { payment: 'paymentApproval', enquiry: 'enquiryApproval', form: 'enquiryForm' };
+const KIND_ARG: Record<string, TemplateKind> = { payment: 'paymentApproval', enquiry: 'enquiryApproval', form: 'enquiryForm' };
 const argAfter = (flag: string) => (process.argv.includes(flag) ? process.argv[process.argv.indexOf(flag) + 1] : undefined);
 
 try {
@@ -109,7 +112,7 @@ try {
   const existing = givenSid && /^HX[0-9a-f]{32}$/.test(givenSid) ? { sid: givenSid, kind: KIND_ARG[process.argv[process.argv.indexOf('--sid') + 2] ?? ''] } : null;
   if (givenSid && !existing?.kind) throw new Error('Use --sid HX… payment|enquiry|form');
 
-  for (const kind of Object.keys(TEMPLATES) as (keyof WhatsAppTemplates)[]) {
+  for (const kind of Object.keys(TEMPLATES) as TemplateKind[]) {
     let sid = saved[kind];
     const submitExisting = existing?.kind === kind;
     if (!sid || submitExisting || renew === kind) {
@@ -119,15 +122,31 @@ try {
       const approvalUrl = (created.links?.approval_create as string | undefined) ?? `${CONTENT}/${sid}/ApprovalRequests/whatsapp`;
       const approval = await twilio('POST', approvalUrl, { name: `${TEMPLATES[kind].friendly_name}_${Date.now().toString(36)}`, category: 'UTILITY' });
       console.log(`${kind}: submitted to WhatsApp for approval: ${approval.status}`);
+      // A new version of the customers' form waits as "enquiryFormNext": the approved one goes on being sent meanwhile
+      const key = kind === 'enquiryForm' && saved.enquiryForm && !submitExisting ? 'enquiryFormNext' : kind;
       await getDb().query(
         `INSERT INTO settings (key, value) VALUES ('whatsapp_templates', $1)
          ON CONFLICT (key) DO UPDATE SET value = settings.value || excluded.value, updated_at = now()`,
-        [JSON.stringify({ [kind]: sid })],
+        [JSON.stringify({ [key]: sid })],
       );
-      console.log(`${kind}: saved in settings ("whatsapp_templates").`);
+      console.log(`${kind}: saved in settings ("whatsapp_templates") as ${key}${key === 'enquiryFormNext' ? `; ${saved.enquiryForm} is sent until it's approved` : ''}.`);
+      if (key === 'enquiryFormNext') sid = saved.enquiryForm;
     }
     const status = await twilio('GET', `${CONTENT}/${sid}/ApprovalRequests`);
     console.log(`${kind}: template ${sid}: WhatsApp status "${status.whatsapp?.status ?? 'unknown'}"${status.whatsapp?.rejection_reason ? ` (${status.whatsapp.rejection_reason})` : ''}`);
+  }
+  // A new version of the form that Meta has approved replaces the old one for good
+  const { enquiryFormNext } = await getSetting<WhatsAppTemplates>('whatsapp_templates');
+  if (enquiryFormNext) {
+    const status = await twilio('GET', `${CONTENT}/${enquiryFormNext}/ApprovalRequests`);
+    const approved = status.whatsapp?.status === 'approved';
+    console.log(`enquiryFormNext: template ${enquiryFormNext}: WhatsApp status "${status.whatsapp?.status ?? 'unknown'}"${approved ? ' → now the enquiry form' : ''}`);
+    if (approved) {
+      await getDb().query(
+        `UPDATE settings SET value = (value - 'enquiryFormNext') || jsonb_build_object('enquiryForm', $1::text), updated_at = now() WHERE key = 'whatsapp_templates'`,
+        [enquiryFormNext],
+      );
+    }
   }
 } finally {
   await pool?.end();

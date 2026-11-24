@@ -42,6 +42,7 @@ import {
   approveEnquiry,
   BookingActionError,
   bookingForPaymentProof,
+  bookingIsOver,
   currentBooking,
   declineEnquiry,
   describeBooking,
@@ -1035,8 +1036,10 @@ async function replyTo(waId: string, latestId: number, transport: WhatsAppTransp
     // Back after a break with an enquiry or booking still under way: Pooja asks whether to go on with it, instead of
     // starting afresh (a lead with no details yet, e.g. one who only said hello, has nothing to go on with)
     const booking = await currentBooking(waId).catch(() => null);
-    const returningWithBooking =
-      returning && firstReply && !restart && Boolean(booking && hasBookingDetails(booking) && booking.status !== 'confirmed' && booking.status !== 'not_available');
+    // An enquiry or booking still under way (a confirmed one, one the team wasn't available for, or one whose event
+    // date has passed is over: whoever writes after that is starting something new)
+    const underWay = Boolean(booking && hasBookingDetails(booking) && !bookingIsOver(booking));
+    const returningWithBooking = returning && firstReply && !restart && underWay;
 
     // Pooja's welcome, word for word, is the whole reply to a hello or "I need makeup services" (with the buttons on Meta)
     if ((restart || (firstReply && !returningWithBooking)) && welcomeIsTheWholeReply(question)) {
@@ -1046,8 +1049,9 @@ async function replyTo(waId: string, latestId: number, transport: WhatsAppTransp
       return;
     }
 
-    // Whatever they say next, the enquiry form follows Pooja's reply: once per conversation, while no enquiry is under way
-    const formDue = !formSentIn(current) && !returningWithBooking && !booking?.status;
+    // Whatever they say next, the enquiry form follows Pooja's reply: once per conversation, while no enquiry is under
+    // way (one that's only partly filled in counts as not under way: the form helps them finish it)
+    const formDue = !formSentIn(current) && !returningWithBooking && !(underWay && booking?.status);
     let kind: Promise<FormKind> | undefined;
     const formKind = () =>
       (kind ??= (transport.enquiryFormReady?.() ?? Promise.resolve(false)).then(

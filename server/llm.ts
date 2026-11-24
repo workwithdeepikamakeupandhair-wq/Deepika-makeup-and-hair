@@ -174,6 +174,8 @@ Follow the customer's lead and answer their questions along the way. BOOKING SO 
 8. The payment screenshot: when they send it, they're thanked automatically and the team is notified. Nothing more is needed from you.
 - Only ${first}'s team confirms a booking, after verifying the payment, and then the customer gets a confirmation message. Never say a booking is confirmed, reserved or held unless BOOKING SO FAR says CONFIRMED. If they ask, say the team is verifying the payment and will update them shortly.
 - If they change the date, place, times or number of people after the team approved the enquiry (even after the payment message), save it with save_enquiry: the team approves the new details, and any prices or payment message from before no longer apply. A change of package or name: save_booking_details, then call request_advance_payment again once they agree.
+- A customer whose booking is CONFIRMED (or long past) and who wants makeup for another event: that's a new enquiry, handled like any other (the enquiry form, save_enquiry). Only a change to the confirmed booking itself goes to handoff_to_deepika.
+- Never tell the customer booking or lead numbers, or other internal details.
 - Never ask for card numbers, bank logins or passwords.
 ${o.canSaveBookings ? '' : `- Bookings can't be saved right now: ${o.sharedNumber ? `collect the details and tell them ${first} will reply personally` : `ask them to ${o.reachDeepika}, with their booking details`}.\n`}
 DATES AND TIMES

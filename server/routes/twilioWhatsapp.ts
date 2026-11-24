@@ -140,24 +140,31 @@ let typingSupported = true;
 
 /** How often an unapproved WhatsApp form is checked again with Twilio. */
 const FORM_CHECK_EVERY_MS = 10 * 60_000;
-const formApproval = { sid: '', approved: false, checkedAt: 0 };
+const formApprovals = new Map<string, { approved: boolean; checkedAt: number }>();
 
-/**
- * The WhatsApp enquiry form's template (`enquiryForm` in the settings' "whatsapp_templates"), once Meta has approved
- * it; null until then, and the written form goes instead.
- */
-async function approvedFormTemplate(): Promise<string | null> {
-  const { enquiryForm } = await getSetting<WhatsAppTemplates>('whatsapp_templates');
-  if (!enquiryForm) return null;
-  if (formApproval.sid === enquiryForm && (formApproval.approved || Date.now() - formApproval.checkedAt < FORM_CHECK_EVERY_MS)) {
-    return formApproval.approved ? enquiryForm : null;
-  }
-  const res = await fetch(`${config.contentUrl}/v1/Content/${enquiryForm}/ApprovalRequests`, { headers: { Authorization: basicAuth() }, signal: AbortSignal.timeout(10_000) });
+/** Whether Meta has approved a template (approved ones are remembered; others are checked again after a while). */
+async function templateApproved(sid: string): Promise<boolean> {
+  const known = formApprovals.get(sid);
+  if (known && (known.approved || Date.now() - known.checkedAt < FORM_CHECK_EVERY_MS)) return known.approved;
+  const res = await fetch(`${config.contentUrl}/v1/Content/${sid}/ApprovalRequests`, { headers: { Authorization: basicAuth() }, signal: AbortSignal.timeout(10_000) });
   const data = (await res.json().catch(() => ({}))) as { whatsapp?: { status?: string } };
   const approved = res.ok && data.whatsapp?.status === 'approved';
-  Object.assign(formApproval, { sid: enquiryForm, approved, checkedAt: Date.now() });
-  console.log(`${LOG} WhatsApp enquiry form ${enquiryForm}: ${approved ? 'approved' : `not approved yet (${data.whatsapp?.status ?? `HTTP ${res.status}`}), so the written form is sent`}`);
-  return approved ? enquiryForm : null;
+  formApprovals.set(sid, { approved, checkedAt: Date.now() });
+  console.log(`${LOG} WhatsApp enquiry form ${sid}: ${approved ? 'approved' : `not approved yet (${data.whatsapp?.status ?? `HTTP ${res.status}`})`}`);
+  return approved;
+}
+
+/**
+ * The WhatsApp enquiry form to send (`enquiryForm` in the settings' "whatsapp_templates"), once Meta has approved it.
+ * A new version waiting for Meta (`enquiryFormNext`) takes over as soon as it's approved. With neither approved, null:
+ * the written form goes instead.
+ */
+async function approvedFormTemplate(): Promise<string | null> {
+  const { enquiryForm, enquiryFormNext } = await getSetting<WhatsAppTemplates>('whatsapp_templates');
+  for (const sid of [enquiryFormNext, enquiryForm]) {
+    if (sid && (await templateApproved(sid))) return sid;
+  }
+  return null;
 }
 
 const transports = new Map<string, WhatsAppTransport>();

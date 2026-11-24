@@ -95,6 +95,8 @@ export interface WhatsAppTemplates {
   enquiryApproval: string;
   /** Not an approval: the enquiry form customers fill in inside WhatsApp (server/enquiryForm.ts) */
   enquiryForm: string;
+  /** A new version of that form while Meta reviews it: sent instead of `enquiryForm` once approved */
+  enquiryFormNext?: string;
 }
 
 /** WhatsApp numbers are compared as digits only. */

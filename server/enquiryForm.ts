@@ -64,17 +64,21 @@ const FIELDS: FormField[] = [
 /** The written form's order (1–9), for the message Pooja reads. */
 const ASKED = [...FIELDS].sort((a, b) => parseInt(a.question) - parseInt(b.question));
 
-/** The Twilio Content template (`twilio/flows`) for the WhatsApp form. */
+/**
+ * The Twilio Content template (`twilio/flows`) for the WhatsApp form: every question on one page that scrolls (the
+ * user's choice, 2026-11-25), in two sections, with Submit at the bottom. Every answer is required except the
+ * additional requirements.
+ */
 export function enquiryFormTemplate() {
   const component = (f: FormField) =>
     f.kind === 'date'
-      ? { type: 'DATE_PICKER', name: f.name, label: f.label }
+      ? { type: 'DATE_PICKER', name: f.name, label: f.label, required: true }
       : f.kind === 'long'
         ? { type: 'LONG_TEXT', name: f.name, label: f.label, text: f.helper, required: false }
         : { type: 'SHORT_TEXT', name: f.name, label: f.label, text: f.helper, required: true, ...(f.kind === 'number' ? { input_type: 'NUMBER' } : {}) };
-  const page = (id: FormField['page']) => FIELDS.filter((f) => f.page === id).map(component);
+  const section = (id: FormField['page']) => FIELDS.filter((f) => f.page === id).map(component);
   return {
-    friendly_name: 'dmh_enquiry_form',
+    friendly_name: 'dmh_enquiry_form_one_page',
     language: 'en',
     types: {
       'twilio/flows': {
@@ -83,8 +87,18 @@ export function enquiryFormTemplate() {
         subtitle: 'Deepika Makeup and Hair',
         type: 'OTHER',
         pages: [
-          { id: 'event', title: 'Your event', next_page_id: 'makeup', layout: [...page('event'), { type: 'FOOTER', label: 'Next' }] },
-          { id: 'makeup', title: 'Makeup requirements', next_page_id: null, layout: [...page('makeup'), { type: 'FOOTER', label: 'Submit' }] },
+          {
+            id: 'enquiry',
+            title: 'Event & makeup details',
+            next_page_id: null,
+            layout: [
+              { type: 'TEXT_SUBHEADING', text: 'Your event' },
+              ...section('event'),
+              { type: 'TEXT_SUBHEADING', text: 'Makeup requirements' },
+              ...section('makeup'),
+              { type: 'FOOTER', label: 'Submit' },
+            ],
+          },
         ],
       },
     },

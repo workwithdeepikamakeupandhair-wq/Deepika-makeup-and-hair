@@ -303,6 +303,13 @@ function missingForAdvance(d: Pick<Draft, 'fullName' | 'eventDate' | 'eventTime'
 }
 
 /**
+ * A booking that's over: confirmed, not available, or its event date has passed. A customer who writes again after
+ * that is starting something new: they get the enquiry form, and their enquiry becomes a new booking.
+ */
+export const bookingIsOver = (d: Pick<Draft, 'status' | 'eventDate'>) =>
+  d.status === 'confirmed' || d.status === 'not_available' || Boolean(d.status && d.eventDate && d.eventDate < todayInAtlanta().iso);
+
+/**
  * Whether anything about the event has been saved. Every chat is a lead from its first message (and an ad click
  * before that), so a booking row can exist with nothing in it yet.
  */
@@ -324,11 +331,15 @@ export function describeBooking(d: Draft | null, quotedArtist: Artist | undefine
     quoted: `${first}'s team APPROVED the enquiry: the customer got the news about their artist and the quotation(s). Now: their package choice, name, then the advance`,
     awaiting_payment: 'the payment message was sent; waiting for the customer to pay the advance and send the screenshot',
     payment_review: `the customer sent the payment screenshot; ${first}'s team is verifying it (not confirmed yet)`,
-    confirmed: 'CONFIRMED by the team (the customer got the confirmation message)',
+    confirmed:
+      'CONFIRMED by the team (the customer got the confirmation message). Makeup for a new event is a new enquiry: the enquiry form as usual (save_enquiry makes it a new booking). Only changes to this booking itself go to handoff_to_deepika',
   };
+  const past = d.status && d.status !== 'confirmed' && d.eventDate && d.eventDate < todayInAtlanta().iso;
   const given = (v: string | number | null, show = String(v)) => (v === null || v === '' ? '(not given)' : show);
   const lines = [
-    `Booking #${d.id}: ${stage[d.status ?? 'none']}.`,
+    past
+      ? `Booking #${d.id}: an earlier enquiry whose event date has passed (it was: ${stage[d.status!]}). Anything they ask for now is a new enquiry: the enquiry form as usual (save_enquiry makes it a new booking).`
+      : `Booking #${d.id}: ${stage[d.status ?? 'none']}.`,
     `- Name: ${nameTyped(d.fullName, customerSaid) ? d.fullName : '(not given yet)'}${d.contactPhone ? ` · contact phone: ${d.contactPhone}` : ' · contact phone: this WhatsApp number'}`,
     `- Enquiry form: occasion ${d.eventType || '(not said; a wedding unless they say otherwise)'} · date ${d.eventDate ? `${longDate(d.eventDate)} (${d.eventDate})` : '(not given)'} · location ${given(d.address)} · city ${given(d.city)}${d.state ? `, ${d.state}` : ''} · event starts ${d.startTime ? timeLabel(d.startTime) : '(not given)'} · makeup ready/reporting ${d.eventTime ? timeLabel(d.eventTime) : '(not given)'} · bridal ${given(d.bridalCount)} · groom ${given(d.groomCount)} · non-bridal ${given(d.nonBridalCount)} · events ${given(d.eventsCount)} · additional requirements ${given(d.specialRequirements)}`,
     `- Artist: ${d.artist ? `${ARTIST_FOR_CUSTOMER[d.artist]} (${d.artist === 'deepika' ? 'Atlanta area' : 'outside Atlanta'})` : 'decided when the team approves the enquiry'}`,
@@ -408,12 +419,10 @@ export async function saveEnquiry(
   // first message), it carries on with that one instead.
   const justStarted = draft && !draft.status && (draft.createdAt.getTime() > Date.now() - 20 * 3_600_000 || !hasBookingDetails(draft));
   if (args.start_new_booking === true && !justStarted) draft = null;
-  if (draft?.status === 'confirmed') {
-    return {
-      ok: false,
-      error: `Booking #${draft.id} is already confirmed. Changes to it go through ${first}'s team: call handoff_to_deepika with what they'd like to change. If these details are for a different, new event, call save_enquiry again with start_new_booking true.`,
-    };
-  }
+  // A confirmed booking, or one whose event has passed, is over: these details are for a new event, so a new booking.
+  // (One the team wasn't available for carries on: a new date for it goes back to the team.)
+  if (draft && bookingIsOver(draft) && draft.status !== 'not_available') draft = null;
+  if (draft?.status === 'not_available' && draft.eventDate && draft.eventDate < todayInAtlanta().iso) draft = null;
   if (draft?.status === 'payment_review') {
     return {
       ok: false,
