@@ -14,7 +14,7 @@ import crypto from 'node:crypto';
 import express, { Router, type Request } from 'express';
 import { registerTemplateSender, type WhatsAppTemplates } from '../approvals.js';
 import { inBackground } from '../background.js';
-import { enquiryFormAnswers } from '../enquiryForm.js';
+import { enquiryFormAnswers, submissionShape } from '../enquiryForm.js';
 import { getSetting } from '../settings.js';
 import { receiveMessage, registerOutboundTransport, who, type InboundMessage, type MediaKind, type WhatsAppTransport } from '../whatsappBot.js';
 
@@ -273,8 +273,8 @@ function toInbound(p: Form): InboundMessage | null {
   if (submitted) {
     console.log(
       form
-        ? `${LOG} ${who(from)} submitted the enquiry form (answer keys: ${form.keys.join(', ')})`
-        : `${LOG} ${who(from)} submitted a WhatsApp form that couldn't be read (${submitted.length} characters, not JSON)`,
+        ? `${LOG} ${who(from)} submitted the enquiry form (answer keys: ${form.keys.join(', ')}; layout ${submissionShape(submitted)})`
+        : `${LOG} ${who(from)} submitted a WhatsApp form that couldn't be read (${submissionShape(submitted)})`,
     );
   }
   const text = form?.text ?? (p.Body?.trim() || p.ButtonText?.trim() || null);

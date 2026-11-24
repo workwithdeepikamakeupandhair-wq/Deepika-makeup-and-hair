@@ -118,21 +118,54 @@ function pickedDate(value: string): string {
   return value;
 }
 
-/** Every answer in a submission, in order: nested objects (e.g. one per page) are opened up. */
+/**
+ * Keys that describe the form rather than hold an answer: the flow's token, a page's id and title, a field's own name,
+ * label, type and helper text (a field's name and label identify its answer, see answersIn).
+ */
+const NOT_AN_ANSWER = /^(flow token|flow id|screen|version|wa flow response params|id|title|subtitle|type|name|label|text|helper text|required|input type|next page id)$/;
+/** Where a field object keeps the customer's answer: {"name": "event_date", "value": "2026-11-28"} */
+const VALUE_KEYS = ['value', 'values', 'answer', 'response', 'selected', 'selection', 'input'];
+
+/**
+ * Every answer in a submission, in order, as [where it was, what they answered]. Whatever the nesting (pages, lists of
+ * fields, objects per page), it's opened up: a plain value is an answer named by its path ("pages.0.event_date"), and
+ * an object with a name or label and a value is one answer named by them.
+ */
 function answersIn(data: unknown, path: string[] = []): [string, string][] {
   if (data === null || data === undefined) return [];
-  if (typeof data !== 'object') return [[path.at(-1) ?? 'answer', String(data)]];
-  if (Array.isArray(data)) return [[path.at(-1) ?? 'answer', data.map(String).join(', ')]];
-  return Object.entries(data as Record<string, unknown>).flatMap(([k, v]) => answersIn(v, [...path, k]));
+  const last = path.at(-1);
+  if (typeof data !== 'object') return last && NOT_AN_ANSWER.test(plainKey(last)) ? [] : [[path.join('.') || 'answer', String(data)]];
+  if (Array.isArray(data)) {
+    // Several choices of one question
+    if (data.every((v) => v === null || typeof v !== 'object')) return data.length ? [[path.join('.') || 'answer', data.join(', ')]] : [];
+    return data.flatMap((v, i) => answersIn(v, [...path, String(i)]));
+  }
+  const fields = data as Record<string, unknown>;
+  const valueKey = VALUE_KEYS.find((k) => k in fields && (fields[k] === null || typeof fields[k] !== 'object' || Array.isArray(fields[k])));
+  const names = [fields.name, fields.label, fields.id, fields.key].filter((v): v is string => typeof v === 'string' && v.trim() !== '');
+  if (valueKey && names.length) {
+    const v = fields[valueKey];
+    return [[[...path, ...new Set(names)].join('.'), Array.isArray(v) ? v.join(', ') : String(v ?? '')]];
+  }
+  return Object.entries(fields).flatMap(([k, v]) => answersIn(v, [...path, k]));
 }
 
-/** Keys that are about the form, not answers. */
-const NOT_AN_ANSWER = /^(flow token|flow id|screen|version|wa flow response params)$/;
+/** The submission's layout with every value hidden, for the logs: {"pages":[{"event_date":"<10 chars>"}]} */
+export function submissionShape(raw: string): string {
+  const mask = (v: unknown): unknown =>
+    Array.isArray(v) ? v.map(mask) : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, mask(x)])) : typeof v === 'string' ? `<${v.length} chars>` : typeof v;
+  try {
+    return JSON.stringify(mask(JSON.parse(raw))).slice(0, 1500);
+  } catch {
+    return `not JSON (${raw.length} characters)`;
+  }
+}
 
 /**
  * The customer message for a submitted WhatsApp form: the 9 questions of the written form with their answers, so
  * Pooja saves them like typed answers. `raw` is the submission's JSON (Twilio's `InteractiveData`); null if it isn't
- * JSON. Answers are found by their names; if the names say nothing (e.g. "screen_0_TextInput_1"), by their order.
+ * JSON. Answers are found by their names; if the names say nothing (e.g. "screen_0_TextInput_1"), by their order. If
+ * neither works, the answers are listed as they came, for Pooja to read.
  */
 export function enquiryFormAnswers(raw: string): { text: string; keys: string[] } | null {
   let data: unknown;
@@ -141,7 +174,7 @@ export function enquiryFormAnswers(raw: string): { text: string; keys: string[] 
   } catch {
     return null;
   }
-  const answers = answersIn(data).filter(([k]) => !NOT_AN_ANSWER.test(plainKey(k)));
+  const answers = answersIn(data).filter(([, v]) => v.trim() !== '');
   if (!answers.length) return null;
   const found = new Map<FormField, string>();
   const leftover: [string, string][] = [];
@@ -156,11 +189,15 @@ export function enquiryFormAnswers(raw: string): { text: string; keys: string[] 
     leftover.length = 0;
     answers.forEach(([, value], i) => found.set(FIELDS[i], value));
   }
+  const listed = leftover.map(([k, v]) => `${k}: ${v}`);
+  // Hardly anything recognised: the answers as they came, rather than nine empty questions
+  if (found.size < 3) {
+    return { text: [`${FORM_SUBMITTED_MARK} (its answers, by field)`, ...answers.map(([k, v]) => `${k}: ${pickedDate(v)}`)].join('\n'), keys: answers.map(([k]) => k) };
+  }
   const line = (f: FormField) => {
     const value = found.get(f)?.trim();
     if (!value) return `${f.question}: (left empty)`;
     return `${f.question}: ${f.kind === 'date' ? pickedDate(value) : value}`;
   };
-  const text = [FORM_SUBMITTED_MARK, ...ASKED.map(line), ...leftover.map(([k, v]) => `${k}: ${v}`)].join('\n');
-  return { text, keys: answers.map(([k]) => k) };
+  return { text: [FORM_SUBMITTED_MARK, ...ASKED.map(line), ...listed].join('\n'), keys: answers.map(([k]) => k) };
 }
