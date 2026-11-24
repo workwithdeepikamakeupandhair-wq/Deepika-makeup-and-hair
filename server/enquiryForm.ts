@@ -122,7 +122,7 @@ function pickedDate(value: string): string {
  * Keys that describe the form rather than hold an answer: the flow's token, a page's id and title, a field's own name,
  * label, type and helper text (a field's name and label identify its answer, see answersIn).
  */
-const NOT_AN_ANSWER = /^(flow token|flow id|screen|version|wa flow response params|id|title|subtitle|type|name|label|text|helper text|required|input type|next page id)$/;
+const NOT_AN_ANSWER = /^(flow token|flow id|screen|version|wa flow response params|id|title|subtitle|type|name|label|text|helper text|required|input type|next page id|page id|pageid)$/;
 /** Where a field object keeps the customer's answer: {"name": "event_date", "value": "2026-11-28"} */
 const VALUE_KEYS = ['value', 'values', 'answer', 'response', 'selected', 'selection', 'input'];
 

@@ -649,7 +649,7 @@ function toolsFor(waId: string, chat: ChatInfo, messages: ChatMessage[], turn: T
         type: 'function',
         function: {
           name: 'save_booking_details',
-          description: `After ${first}'s team has approved the enquiry and the customer has seen the prices: save the packages they choose (priced for their artist), their full name and a contact phone. Pass only what's new or changed: empty strings and an empty items list keep what's saved. The result has the prices and what's still needed before the advance.`,
+          description: `After ${first}'s team has approved the enquiry and the customer has seen the prices: save the packages for every service in their enquiry (priced for their artist). A name or other phone number only if they give one (never ask). Pass only what's new or changed: empty strings and an empty items list keep what's saved. The result has each service's price and advance, and what's still needed before the advance.`,
           strict: true,
           parameters: {
             type: 'object',

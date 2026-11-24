@@ -48,6 +48,7 @@ import {
   enquiryNotAvailableMessage,
   EVENT_OCCASIONS,
   longDate,
+  occasionOf,
   paymentRequestMessage,
   QUOTATIONS,
   quotationsFor,
@@ -292,14 +293,36 @@ export function missingFromEnquiry(d: Pick<Draft, 'eventDate' | 'address' | 'cit
   ].filter((x): x is string => Boolean(x));
 }
 
-/** What still has to be known before the advance can be asked for (the enquiry itself was approved by the team). */
-function missingForAdvance(d: Pick<Draft, 'fullName' | 'eventDate' | 'eventTime' | 'items'>, nameKnown: boolean): string[] {
-  return [
-    !nameKnown && 'full name',
-    !d.eventDate && 'event date',
-    !d.eventTime && 'makeup ready time',
-    !d.items.length && 'package (and how many people)',
-  ].filter((x): x is string => Boolean(x));
+/**
+ * What still has to be known before the advance can be asked for (the enquiry itself was approved by the team). Not
+ * their name (the user's choice, 2026-11-25): the booking goes by their WhatsApp name.
+ */
+function missingForAdvance(d: Pick<Draft, 'eventDate' | 'eventTime' | 'items'>): string[] {
+  return [!d.eventDate && 'event date', !d.eventTime && 'makeup ready time', !d.items.length && 'package (and how many people)'].filter((x): x is string => Boolean(x));
+}
+
+/** One service's advance: ADVANCE_PERCENT of its price. */
+export const advanceFor = (i: Pick<QuoteItem, 'unitPrice' | 'quantity'>) => cents(i.unitPrice * i.quantity * ADVANCE_SHARE);
+
+/**
+ * The enquiry's people the saved packages don't cover yet ("1 non-bridal (Non-Bridal (Family Glam), $300 per person)"):
+ * a service asked for in the form but not chosen. Each look is one per person per event.
+ */
+function servicesNotSaved(d: Pick<Draft, 'eventType' | 'bridalCount' | 'groomCount' | 'nonBridalCount' | 'eventsCount' | 'artist'>, items: { package: string; quantity: number }[]) {
+  const events = Math.max(1, d.eventsCount ?? 1);
+  const looks = (ids: string[]) => items.filter((i) => ids.includes(i.package)).reduce((n, i) => n + i.quantity, 0);
+  const party = occasionOf(d.eventType) === 'party';
+  const main = ['hd_bridal', 'advanced_bridal', 'airbrush_bridal', 'function_hd_makeup', 'party_basic', 'party_hd', 'party_advanced'];
+  const priceOf = (id: PackageId) => {
+    const p: { deepika?: Price; senior?: Price } = PACKAGES[id].prices;
+    const x = p[d.artist ?? 'deepika'];
+    return x ? `${x.title}, ${money(x.price)}${x.perPerson ? ' per person' : ''}` : 'no price list for this artist';
+  };
+  const gaps: string[] = [];
+  if ((d.bridalCount ?? 0) > 0 && looks(main) < (d.bridalCount ?? 0) * events) gaps.push(`${d.bridalCount} ${party ? 'person' : 'bridal'} (the package they choose)`);
+  if (!party && (d.nonBridalCount ?? 0) > 0 && looks(['non_bridal']) < (d.nonBridalCount ?? 0) * events) gaps.push(`${d.nonBridalCount} non-bridal (${priceOf('non_bridal')})`);
+  if ((d.groomCount ?? 0) > 0 && looks(['groom']) < (d.groomCount ?? 0) * events) gaps.push(`${d.groomCount} groom (${priceOf('groom')})`);
+  return { gaps, events };
 }
 
 /**
@@ -328,7 +351,7 @@ export function describeBooking(d: Draft | null, quotedArtist: Artist | undefine
     none: 'the customer is filling in the enquiry form (not sent to the team yet)',
     enquiry_review: `the enquiry form is complete and ${first}'s team is reviewing it; they'll update the customer within two hours. No prices until they approve it`,
     not_available: `${first}'s team reviewed the enquiry and is NOT available for it (the customer was told). If they'd like another date, save it with save_enquiry: it goes to the team again`,
-    quoted: `${first}'s team APPROVED the enquiry: the customer got the news about their artist and the quotation(s). Now: their package choice, name, then the advance`,
+    quoted: `${first}'s team APPROVED the enquiry: the customer got the news about their artist and the quotation(s). Now: their package choice, then straight away the advance (no name or phone needed)`,
     awaiting_payment: 'the payment message was sent; waiting for the customer to pay the advance and send the screenshot',
     payment_review: `the customer sent the payment screenshot; ${first}'s team is verifying it (not confirmed yet)`,
     confirmed:
@@ -340,7 +363,7 @@ export function describeBooking(d: Draft | null, quotedArtist: Artist | undefine
     past
       ? `Booking #${d.id}: an earlier enquiry whose event date has passed (it was: ${stage[d.status!]}). Anything they ask for now is a new enquiry: the enquiry form as usual (save_enquiry makes it a new booking).`
       : `Booking #${d.id}: ${stage[d.status ?? 'none']}.`,
-    `- Name: ${nameTyped(d.fullName, customerSaid) ? d.fullName : '(not given yet)'}${d.contactPhone ? ` · contact phone: ${d.contactPhone}` : ' · contact phone: this WhatsApp number'}`,
+    `- Name: ${nameTyped(d.fullName, customerSaid) ? d.fullName : `${d.fullName} (their WhatsApp name; never ask for their name)`}${d.contactPhone ? ` · contact phone: ${d.contactPhone}` : ' · contact phone: this WhatsApp number'}`,
     `- Enquiry form: occasion ${d.eventType || '(not said; a wedding unless they say otherwise)'} · date ${d.eventDate ? `${longDate(d.eventDate)} (${d.eventDate})` : '(not given)'} · location ${given(d.address)} · city ${given(d.city)}${d.state ? `, ${d.state}` : ''} · event starts ${d.startTime ? timeLabel(d.startTime) : '(not given)'} · makeup ready/reporting ${d.eventTime ? timeLabel(d.eventTime) : '(not given)'} · bridal ${given(d.bridalCount)} · groom ${given(d.groomCount)} · non-bridal ${given(d.nonBridalCount)} · events ${given(d.eventsCount)} · additional requirements ${given(d.specialRequirements)}`,
     `- Artist: ${d.artist ? `${ARTIST_FOR_CUSTOMER[d.artist]} (${d.artist === 'deepika' ? 'Atlanta area' : 'outside Atlanta'})` : 'decided when the team approves the enquiry'}`,
     d.items.length
@@ -352,8 +375,10 @@ export function describeBooking(d: Draft | null, quotedArtist: Artist | undefine
     const missing = missingFromEnquiry(d);
     lines.push(missing.length ? `- Still missing from the enquiry form: ${missing.join(', ')}.` : '- The enquiry form is complete.');
   } else if (d.status === 'quoted') {
-    const missing = missingForAdvance(d, nameTyped(d.fullName, customerSaid));
+    const missing = missingForAdvance(d);
+    const { gaps } = servicesNotSaved(d, d.items);
     lines.push(missing.length ? `- Still needed before the advance: ${missing.join(', ')}.` : '- All details are saved.');
+    if (d.items.length && gaps.length) lines.push(`- From their enquiry, not saved as packages yet: ${gaps.join('; ')}.`);
   }
   return lines.filter(Boolean).join('\n');
 }
@@ -384,7 +409,8 @@ function price(items: { package: PackageId; quantity: number }[], artist: Artist
     priced.push({ package: item.package, title: p.title, quantity: item.quantity, unitPrice: p.price, perPerson: p.perPerson });
   }
   const total = cents(priced.reduce((sum, i) => sum + i.unitPrice * i.quantity, 0));
-  const advance = cents(total * ADVANCE_SHARE);
+  // The advance is worked out per service and added up, as the payment message shows it
+  const advance = cents(priced.reduce((sum, i) => sum + advanceFor(i), 0));
   return { priced, unavailable, total, advance, balance: cents(total - advance) };
 }
 
@@ -575,7 +601,8 @@ const ENQUIRY_SENT_NOTE = 'Our team will check your application and update you w
 
 /**
  * save_booking_details: once the team has approved the enquiry, saves the packages the customer chose (priced for
- * their artist), their full name and a contact phone. The result tells the model what to say next.
+ * their artist), and a name or contact phone if they give one (they aren't asked). The result tells the model what to
+ * say next.
  */
 export async function saveBookingDetails(
   waId: string,
@@ -622,10 +649,8 @@ export async function saveBookingDetails(
     contactPhone: contactPhone || draft.contactPhone || null,
     items: items.length ? items : draft.items.filter((i) => isPackage(i.package)).map((i) => ({ package: i.package as PackageId, quantity: i.quantity })),
   };
-  // A name the customer never typed (e.g. taken from the profile) isn't saved over one they did
-  const untypedName = Boolean(fullName) && !nameTyped(fullName, customerSaid);
-  if (untypedName) next.fullName = draft.fullName || chat.profileName || NO_NAME;
-  const nameKnown = nameTyped(next.fullName, customerSaid);
+  // A name the customer never typed isn't saved over the one there is (their WhatsApp name, until they give one)
+  if (fullName && !nameTyped(fullName, customerSaid)) next.fullName = draft.fullName || chat.profileName || NO_NAME;
   const artist = draft.artist;
   const quote = price(next.items, artist);
   const people = next.items.reduce((n, i) => n + i.quantity, 0);
@@ -651,20 +676,25 @@ export async function saveBookingDetails(
   );
   console.log(`[whatsapp] booking #${draft.id}: details saved${changedAfterPaymentRequest ? '; payment request cancelled by a change' : ''}`);
 
-  const missing = missingForAdvance({ ...draft, ...next, items: quote.priced }, nameKnown);
+  const missing = missingForAdvance({ ...draft, items: quote.priced });
+  const { gaps } = servicesNotSaved(draft, next.items);
   const occasions = [...new Set(next.items.map((i) => PACKAGES[i.package].occasion).filter(Boolean))];
   return {
     ok: true,
-    booking_number: draft.id,
     artist: artist ?? `decided when ${first}'s team approves the enquiry`,
     prices: quote.priced.length
       ? {
-          items: quote.priced.map((i) => ({ package: i.title, quantity: i.quantity, price: money(i.unitPrice * i.quantity) })),
+          services: quote.priced.map((i) => ({ service: i.title, quantity: i.quantity, price: money(i.unitPrice * i.quantity), [`advance_${ADVANCE_PERCENT}_percent`]: money(advanceFor(i)) })),
           total: money(quote.total),
           [`advance_${ADVANCE_PERCENT}_percent`]: money(quote.advance),
           balance: money(quote.balance),
         }
       : null,
+    ...(gaps.length && quote.priced.length
+      ? {
+          enquiry_services_not_saved: `Their enquiry also asked for: ${gaps.join('; ')}. Save those too, with the package they chose (one look per person per event), unless they said they don't need them; ask if unsure. Then request_advance_payment.`,
+        }
+      : {}),
     ...(quote.unavailable.length
       ? {
           price_not_available: `There's no senior artist price for: ${quote.unavailable.join(', ')}. Don't guess a price: tell the customer ${first}'s team will confirm the quote for their location, and call handoff_to_deepika.`,
@@ -675,13 +705,14 @@ export async function saveBookingDetails(
           quotation_needed: `The customer hasn't seen ${artist === 'deepika' ? "Deepika's" : "the senior artists'"} prices in this conversation: call send_quotation (${occasions.length ? occasions.join(', ') : 'their occasion'}) in this reply, then ask which package they like.`,
         }
       : {}),
-    ...(changedAfterPaymentRequest ? { note: 'The payment message they got earlier no longer matches: once they agree, call request_advance_payment again.' } : {}),
-    ...(untypedName ? { full_name_not_saved: 'full_name must be the name the customer typed in this chat: ask them for their full name.' } : {}),
+    ...(changedAfterPaymentRequest ? { note: 'The payment message they got earlier no longer matches: call request_advance_payment again.' } : {}),
     still_needed_before_advance: !approved
       ? `${first}'s team hasn't approved the enquiry yet`
       : missing.length
         ? missing
-        : 'nothing: once the customer has agreed to the package and price, call request_advance_payment',
+        : gaps.length
+          ? 'the services from their enquiry that aren\'t saved yet (above)'
+          : "nothing: call request_advance_payment now, in this reply (don't ask for their name or phone, and don't type the prices or totals yourself: the payment message shows each service's price and advance)",
   };
 }
 
@@ -711,7 +742,7 @@ export async function requestAdvancePayment(
             : `The enquiry form isn't complete yet, so it hasn't gone to ${first}'s team. Ask for what's missing (save_enquiry).`,
     };
   }
-  const missing = missingForAdvance(d, nameTyped(d.fullName, customerSaid));
+  const missing = missingForAdvance(d);
   if (missing.length) return { ok: false, error: `Still needed first: ${missing.join(', ')}. Ask the customer naturally, save with save_booking_details, then try again.` };
   if (!d.artist) return { ok: false, error: `The booking has no artist yet. Call handoff_to_deepika (reason: "approved enquiry without an artist") and tell the customer the team will be in touch.` };
   if (!d.eventDate || !d.eventTime || d.total === null || d.advance === null) return { ok: false, error: 'The booking has no price yet: save the package with save_booking_details.' };

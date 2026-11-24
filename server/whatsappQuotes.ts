@@ -280,7 +280,6 @@ export function longDate(iso: string): string {
   return new Intl.DateTimeFormat('en-US', { timeZone: 'UTC', weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }).format(new Date(`${iso}T00:00:00Z`));
 }
 
-const itemLine = (i: QuoteItem) => `• ${i.title}${i.quantity > 1 ? ` × ${i.quantity}` : ''}: ${money(i.unitPrice * i.quantity)}`;
 
 export interface BookingSummary {
   fullName: string;
@@ -295,28 +294,36 @@ export interface BookingSummary {
   balance: number;
 }
 
-/** Asks for the advance: what's booked, the amounts, and the payment details from the dashboard's Settings. */
+/** One service's 25% advance (the same sum as advanceFor in whatsappBooking.ts). */
+const advanceOf = (i: QuoteItem) => Math.round(i.unitPrice * i.quantity * ADVANCE_PERCENT) / 100;
+
+/** "*HD Bridal Makeup*\nPrice: $550 · Advance (25%): $137.50"; several people: "× 2 ($300 each)". */
+const serviceBlock = (i: QuoteItem) =>
+  `*${i.title}*${i.quantity > 1 ? ` × ${i.quantity}` : ''}\nPrice: ${money(i.unitPrice * i.quantity)}${i.quantity > 1 ? ` (${money(i.unitPrice)} each)` : ''} · Advance (${ADVANCE_PERCENT}%): ${money(advanceOf(i))}`;
+
+/**
+ * Asks for the advance: each service with its price and its 25% advance, the totals, and the payment details from the
+ * dashboard's Settings, then the screenshot.
+ */
 export function paymentRequestMessage(b: BookingSummary, paymentDetails: string): string {
   return `Everything looks good! ❤️ We're excited to be part of your special day.
 
-*Your booking*
-${b.items.map(itemLine).join('\n')}
 📅 ${longDate(b.date)} at ${timeLabel(b.time)}
 💄 Artist: ${ARTIST_FOR_CUSTOMER[b.artist]}
 
+${b.items.map(serviceBlock).join('\n\n')}
+
 Total: *${money(b.total)}*
-Advance (${ADVANCE_PERCENT}%): *${money(b.advance)}*
+Advance to pay now (${ADVANCE_PERCENT}%): *${money(b.advance)}*
 Remaining balance: ${money(b.balance)}
 
-To confirm your booking and block your slot, we require a ${ADVANCE_PERCENT}% advance payment of the total package amount, which is *${money(b.advance)}*.
-
-Please note that the advance payment is non-refundable.
-
-You can make the payment using the details below:
+To confirm your booking and block your slot, kindly pay the ${ADVANCE_PERCENT}% advance of *${money(b.advance)}* using the details below:
 
 ${paymentDetails}
 
-📸 Once you've completed the payment, kindly share the *payment screenshot* here. Our team will verify it and confirm your booking.`;
+Please note that the advance payment is non-refundable.
+
+📸 Once you've paid, kindly share the *payment screenshot* here. Our team will verify it and confirm your booking.`;
 }
 
 /** Sent when the customer's payment screenshot arrives. Nothing is marked as paid until the team checks it. */
@@ -337,8 +344,7 @@ Thank you for trusting ${ARTIST} and her team.
 Your booking has been successfully confirmed.
 
 *Your booking details*
-• Name: ${b.fullName}
-• Service: ${b.items.map((i) => `${i.title}${i.quantity > 1 ? ` × ${i.quantity}` : ''}`).join(', ')}
+${/^WhatsApp (customer|lead|contact)$/.test(b.fullName) ? '' : `• Name: ${b.fullName}\n`}• Service: ${b.items.map((i) => `${i.title}${i.quantity > 1 ? ` × ${i.quantity}` : ''}`).join(', ')}
 • Event date: ${longDate(b.date)}
 • Time: ${timeLabel(b.time)}
 • Artist: ${ARTIST_FOR_CUSTOMER[b.artist]}
