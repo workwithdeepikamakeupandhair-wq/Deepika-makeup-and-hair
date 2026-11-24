@@ -93,6 +93,8 @@ export interface EnquiryTemplateVariables {
 export interface WhatsAppTemplates {
   paymentApproval: string;
   enquiryApproval: string;
+  /** Not an approval: the enquiry form customers fill in inside WhatsApp (server/enquiryForm.ts) */
+  enquiryForm: string;
 }
 
 /** WhatsApp numbers are compared as digits only. */

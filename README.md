@@ -121,18 +121,27 @@ and the prompt in `server/llm.ts`. A number can be connected in two ways, and bo
 
 **Pooja.** The assistant is *Pooja, Deepika's manager*: warm, natural and never pushy (the personality and the booking
 journey are in `buildWhatsAppSystemPrompt`). The website's WhatsApp buttons open the chat with "Hi, I need makeup
-services." ready to send. Every new conversation starts with her welcome and the enquiry form, word for word
-(`WELCOME_MESSAGE` and `ENQUIRY_FORM` in `server/whatsappQuotes.ts`): event date, location (city & venue), event start
-time, makeup ready / reporting time, how many need bridal, groom and non-bridal makeup, additional requirements, and
-the number of events. To a plain hello or "I need makeup services" that's the whole reply; anything else the customer
-said gets a short reply after it.
+services." ready to send. That, or a plain hello, gets her welcome word for word (`WELCOME_MESSAGE` in
+`server/whatsappQuotes.ts`): "Hi there! 😊 I'm Pooja, Deepika's manager. Welcome! How can I help you today? …". Whatever
+the customer says next, Pooja replies briefly and the enquiry form follows automatically, once per conversation: event
+date, location (city & venue), event start time, makeup ready / reporting time, how many need bridal, groom and
+non-bridal makeup, additional requirements, and the number of events.
+
+**The enquiry form** (`server/enquiryForm.ts`). On Twilio it's a WhatsApp form: a message with a **Fill in the form**
+button that opens fields (a date picker, text and number fields) and a **Submit** button, without leaving WhatsApp. It's
+a Twilio Content template (`twilio/flows`, `enquiryForm` in the `settings` table's "whatsapp_templates"), created by
+`server/scripts/create-approval-template.ts`, and is sent only once Meta has approved it (checked with Twilio, every 10
+minutes until then). Until then, and on Meta's Cloud API connection, the written form (`ENQUIRY_FORM`) goes instead and
+customers type their answers. A submitted form reaches the Twilio webhook as `InteractiveData` (JSON); it becomes a
+customer message listing the 9 answers, which Pooja saves like typed ones. The log line "submitted the enquiry form
+(answer keys: …)" shows how the answers were named.
 
 **The booking journey** (`server/whatsappBooking.ts`). The model handles the conversation; the form's completeness,
 the artist, prices, the advance and the calendar are worked out in code.
 
-1. **The form:** the customer answers in their own words, in one message or several. Pooja saves each answer
-   (`save_enquiry`) on the customer's lead and asks for whatever is missing. A date or time counts only if the
-   customer typed it. No prices before step 3.
+1. **The form:** the customer submits the WhatsApp form, or types their answers (in one message or several). Pooja
+   saves the answers (`save_enquiry`) on the customer's lead and asks for whatever is missing; `send_enquiry_form`
+   sends the form again if they ask. A date or time counts only if the customer gave it. No prices before step 3.
 2. **To the team:** once the form is complete, the customer gets "Our team will check your application and update
    you within two hours" word for word, and the enquiry shows under *Enquiries to approve* (and goes to the approval
    numbers on WhatsApp, below).
@@ -249,7 +258,7 @@ doesn't allow function tools (the calendar check) together with reasoning on tha
    page: select **Inbound**, choose **Custom** under **Auto-Reply settings**, and add the same webhook. Leave the status
    callback empty: the bot asks for delivery reports itself. Until this is set, Twilio answers every message itself
    with "Standard auto-reply…".
-5. **Try it:** send "Hi, I need makeup services." from the phone that joined. Pooja welcomes you with the enquiry form.
+5. **Try it:** send "Hi, I need makeup services." from the phone that joined. Pooja welcomes you; answer her, and the enquiry form follows.
 
 **Trial accounts can't send the bot's replies.** Twilio's trial only lets messages use `To`, `From`, `StatusCallback` and
 a `ContentSid` pointing at one of Twilio's own templates ("You won't be able to write your own message"). TwiML replies

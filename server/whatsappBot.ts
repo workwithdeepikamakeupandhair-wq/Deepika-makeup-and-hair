@@ -55,9 +55,11 @@ import {
   savePaymentProof,
   type CustomerMessages,
 } from './whatsappBooking.js';
+import { FORM_SENT_NOTE, formSentIn } from './enquiryForm.js';
 import {
   BROCHURES,
   brochureUrl,
+  ENQUIRY_FORM,
   ENQUIRY_RECEIVED_MESSAGE,
   EVENT_OCCASIONS,
   EXTRA_PROOF_MESSAGE,
@@ -189,6 +191,13 @@ export interface WhatsAppTransport {
   send(to: string, body: string, withButtons: boolean): Promise<void>;
   /** Sends a picture from a public address (a brochure), with an optional caption. */
   sendImage(to: string, url: string, caption?: string): Promise<void>;
+  /**
+   * Sends the enquiry form as a WhatsApp form (fields and a Submit button, server/enquiryForm.ts). False when this
+   * connection can't (no approved form template yet, or no templates at all): the written form goes instead.
+   */
+  sendEnquiryForm?(to: string): Promise<boolean>;
+  /** Whether sendEnquiryForm would send the WhatsApp form now (so Pooja can say how to fill it in). */
+  enquiryFormReady?(): Promise<boolean>;
   /** Blue ticks plus "typing…" while the answer is prepared. Best effort: never throws. */
   markReadAndTyping(messageId: string): void;
 }
@@ -359,12 +368,27 @@ const welcomeIsTheWholeReply = (message: string) => isGreeting(message) || isGen
 const text = (value: unknown, max: number) => (typeof value === 'string' ? value.trim().slice(0, max) : '');
 
 /** A fixed message, a brochure picture, or the model's reply, in the order they're sent. */
-type Outgoing = { text: string } | { image: string; caption?: string };
+type Outgoing = { text: string } | { image: string; caption?: string } | { form: true };
+
+/** The WhatsApp form (fields and Submit) or the written form. */
+type FormKind = 'whatsapp' | 'written';
+
+/** How Pooja leads into each form, as a tool's note or in the prompt. */
+const FORM_LEAD_IN: Record<FormKind, string> = {
+  whatsapp: 'it\'s a WhatsApp form: they tap *Fill in the form* under it and press Submit (e.g. "To share an accurate quotation, kindly tap *Fill in the form* below 👇")',
+  written: 'it\'s the written form: they type their answers and send them here (e.g. "To share an accurate quotation, kindly fill in the details below and send them here 👇"); there is no button',
+};
 
 interface Turn {
   handoff: boolean;
   /** Brochures, quotations and the payment message, sent word for word before the reply. */
   outbox: Outgoing[];
+  /** The enquiry form, sent after the reply. */
+  after: Outgoing[];
+  /** The enquiry form goes out after this reply (it's due, or Pooja asked for it), so she leads into it. */
+  formComing: boolean;
+  /** Which form the connection sends: the WhatsApp form (once approved) or the written one. Asked once per reply. */
+  formKind: () => Promise<FormKind>;
   /** The advance was asked for in this turn (booking number). */
   advanceRequested?: string;
   /** A complete enquiry went to the team in this turn (booking number): the approval numbers are told after the reply. */
@@ -533,7 +557,35 @@ function toolsFor(waId: string, chat: ChatInfo, messages: ChatMessage[], turn: T
         }
         if (saved.outcome === 'resubmitted') turn.enquirySent = saved.bookingId;
         if (saved.outcome === 'submitted' || saved.outcome === 'resubmitted') chat.quotedArtist = undefined;
+        // The form follows this reply: it asks for the rest, so Pooja doesn't
+        if (saved.outcome === 'incomplete' && turn.formComing) {
+          return {
+            ...saved.result,
+            note: "Saved. The enquiry form goes out right after your reply and asks for everything else: don't ask for the missing details yourself; thank them and lead into the form in a few words.",
+          };
+        }
         return saved.result;
+      },
+    },
+
+    send_enquiry_form: {
+      definition: {
+        type: 'function',
+        function: {
+          name: 'send_enquiry_form',
+          description:
+            'Send the enquiry form (a WhatsApp form with a "Fill in the form" button and a Submit button) right after your reply. It goes automatically after your first reply in a conversation, so call it only when they ask for the form again, or need it for a different, new event.',
+          strict: true,
+          parameters: { type: 'object', additionalProperties: false, required: [], properties: {} },
+        },
+      },
+      run: async () => {
+        if (!turn.after.some((m) => 'form' in m)) turn.after.push({ form: true });
+        turn.formComing = true;
+        return {
+          ok: true,
+          note: `The form goes out right after your reply, below it. Lead into it in a few words; ${FORM_LEAD_IN[await turn.formKind()]}. Don't list its questions.`,
+        };
       },
     },
 
@@ -735,7 +787,9 @@ const NO_REPLY_RE = new RegExp(`^\\W*${NO_REPLY}\\W*$`);
 const QUOTATION_MARK = '{{quotation}}';
 const QUOTATION_MARK_RE = /[ \t]*\{\{\s*quotation\s*\}\}[ \t]*/gi;
 /** "Here are our packages and pricing 👇" and the like: words that only make sense with a quotation under them. */
-const POINTS_AT_QUOTE = /here (are|is) (our|the|your)[^.!?\n]{0,60}(packages?|pricing|prices|quotation|brochure)|👇/i;
+const POINTS_AT_QUOTE = /here (are|is) (our|the|your)[^.!?\n]{0,60}(packages?|pricing|prices|quotation|brochure)/i;
+/** Points at something sent under the reply: a quotation, or the enquiry form when it's coming. */
+const POINTS_DOWN = /👇/;
 /**
  * Asks the customer to pay now or send the payment screenshot ("Your booking is ready for the advance payment…
  * please send the payment screenshot"): only right with the payment message, which has the amount and where to pay.
@@ -759,20 +813,31 @@ function inOrder(reply: string, fixed: Outgoing[]): Outgoing[] {
 
 /**
  * Writes the reply to `messages`: the current conversation, ending with the customer's latest message(s).
- * - `firstReply`: nothing has been sent in this conversation yet.
- * - `welcomeFirst`: Pooja's welcome with the enquiry form goes out first, word for word, and the reply (if any) follows
- *   it; without it on a first reply, Pooja introduces herself in her own words.
+ * - `firstReply`: nothing has been sent in this conversation yet, so Pooja introduces herself.
+ * - `formDue`: the enquiry form hasn't been sent in this conversation and no enquiry is under way: it goes out right
+ *   after the reply (unless the customer has just given every answer anyway).
  * - `returningWithBooking`: the customer is back after a long break with an enquiry or booking still under way.
- * The reply is empty when the fixed messages in `turn.outbox` (sent before it) say everything.
+ * The reply is empty when the fixed messages in `turn.outbox` (sent before it) and `turn.after` say everything.
  */
 async function answer(
   waId: string,
   chat: ChatInfo,
   messages: ChatMessage[],
-  o: { firstReply: boolean; welcomeFirst: boolean; returningWithBooking: boolean },
+  o: { firstReply: boolean; formDue: boolean; returningWithBooking: boolean; formKind: () => Promise<FormKind> },
 ): Promise<{ reply: string; turn: Turn }> {
   const firstReply = o.firstReply;
-  const turn: Turn = { handoff: false, outbox: o.welcomeFirst ? [{ text: WELCOME_MESSAGE }] : [] };
+  const turn: Turn = { handoff: false, outbox: [], after: [], formComing: o.formDue, formKind: o.formKind };
+  /**
+   * What goes with the reply whatever it says: the form when it's due, and on a first reply Pooja's greeting if the
+   * reply doesn't introduce her (before it, or before the thank-you when the first message completed the enquiry).
+   */
+  const finish = (reply: string): string => {
+    if (o.formDue && !turn.enquirySent && !turn.after.some((m) => 'form' in m)) turn.after.push({ form: true });
+    if (!firstReply || /Pooja/.test(reply)) return reply;
+    if (reply) return `${WELCOME_GREETING}\n\n${reply}`;
+    if (turn.enquirySent) turn.outbox.unshift({ text: WELCOME_GREETING });
+    return reply;
+  };
   const searchStarted = Date.now();
   const search = retrieve(messages).catch((err) => {
     console.error(`${LOG} knowledge search failed:`, err instanceof Error ? err.message : err);
@@ -801,7 +866,7 @@ async function answer(
     sharedNumber: SHARED_NUMBER,
     reachDeepika: REACH_DEEPIKA,
     firstReply,
-    welcomeFirst: o.welcomeFirst,
+    formLeadIn: o.formDue ? FORM_LEAD_IN[await o.formKind()] : null,
     // An unfinished booking from the earlier conversation: Pooja asks whether to continue it or start a new one
     returningWithBooking: o.returningWithBooking,
     booking: describeBooking(booking, chat.quotedArtist, customerWords(messages)),
@@ -815,8 +880,9 @@ async function answer(
       signal: AbortSignal.timeout(60_000),
       accept: script.accept,
       revise: (r) => {
-        // The reply points to a quotation ("Here are our packages 👇") that wasn't sent
-        if (!turn.quotationSent && (new RegExp(QUOTATION_MARK_RE.source, 'i').test(r) || POINTS_AT_QUOTE.test(r))) {
+        // The reply points to a quotation ("Here are our packages 👇") that wasn't sent (a 👇 may point at the form)
+        const pointsDown = POINTS_DOWN.test(r) && !turn.formComing;
+        if (!turn.quotationSent && (new RegExp(QUOTATION_MARK_RE.source, 'i').test(r) || POINTS_AT_QUOTE.test(r) || pointsDown)) {
           return `You put ${QUOTATION_MARK} in your reply (or pointed at prices) but didn't call send_quotation, so nothing would be shown. If ${B.artist.split(' ')[0]}'s team has approved the enquiry, call send_quotation now for their occasion; if not, don't point at any prices. Then write your whole reply again.`;
         }
         // The reply asks them to pay or send the screenshot, but they never got the payment message (amount, where to pay)
@@ -828,12 +894,11 @@ async function answer(
       },
       cacheKey: PROMPT_CACHE_KEY,
     });
-    // The enquiry was complete in the very first message: the greeting and the thank-you, without the form
-    if (o.welcomeFirst && turn.enquirySent) turn.outbox[0] = { text: WELCOME_GREETING };
-    if (NO_REPLY_RE.test(reply)) {
-      if (turn.outbox.length) return { reply: '', turn };
-    } else if (reply) {
-      return { reply: script.accept(reply) ? reply : script.clean(reply), turn };
+    const text = finish(NO_REPLY_RE.test(reply) ? '' : reply);
+    if (!text) {
+      if (turn.outbox.length || turn.after.length) return { reply: '', turn };
+    } else {
+      return { reply: script.accept(text) ? text : script.clean(text), turn };
     }
   } catch (err) {
     console.error(`${LOG} OpenAI request failed (${OPENAI_MODEL}):`, err instanceof Error ? err.message : err);
@@ -841,10 +906,10 @@ async function answer(
     turn.aiMs = Date.now() - aiStarted;
   }
   // The model failed after a tool may already have run: what it decided still goes out
-  if (o.welcomeFirst && turn.enquirySent) turn.outbox[0] = { text: WELCOME_GREETING };
+  finish('');
   if (turn.handoff) return { reply: HANDOFF_REPLY, turn };
-  if (turn.outbox.length) return { reply: '', turn };
-  if (firstReply) return { reply: WELCOME_MESSAGE, turn };
+  if (firstReply) return { reply: turn.enquirySent ? '' : WELCOME_MESSAGE, turn };
+  if (turn.outbox.length || turn.after.length) return { reply: '', turn };
   // The search has had more time by now
   return { reply: searchAnswerForWhatsApp((await within(search, SEARCH_BUDGET_MS)) ?? retrieved), turn };
 }
@@ -879,7 +944,10 @@ async function claimReplying(waId: string): Promise<string | null> {
   }
 }
 
-/** Sends brochures, fixed messages and the reply in order. A brochure that fails is skipped (its quotation still goes). */
+/**
+ * Sends brochures, fixed messages, the reply and the enquiry form in order. A brochure that fails is skipped (its
+ * quotation still goes); the WhatsApp form falls back to the written one.
+ */
 async function sendAll(waId: string, transport: WhatsAppTransport, parts: Outgoing[]): Promise<string[]> {
   const sent: string[] = [];
   for (const part of parts) {
@@ -890,6 +958,18 @@ async function sendAll(waId: string, transport: WhatsAppTransport, parts: Outgoi
       } catch (err) {
         console.error(`${LOG} could not send a brochure to ${who(waId)}:`, err instanceof Error ? err.message : err);
       }
+    } else if ('form' in part) {
+      const asForm = await (transport.sendEnquiryForm?.(waId) ?? Promise.resolve(false)).catch((err) => {
+        console.error(`${LOG} could not send the WhatsApp form to ${who(waId)}; sending the written form:`, err instanceof Error ? err.message : err);
+        return false;
+      });
+      if (asForm) {
+        sent.push(FORM_SENT_NOTE);
+      } else {
+        await transport.send(waId, ENQUIRY_FORM, false);
+        sent.push(ENQUIRY_FORM);
+      }
+      console.log(`${LOG} enquiry form sent to ${who(waId)} (${asForm ? 'WhatsApp form' : 'written'})`);
     } else {
       await transport.send(waId, part.text, false);
       sent.push(part.text);
@@ -953,25 +1033,32 @@ async function replyTo(waId: string, latestId: number, transport: WhatsAppTransp
       chat.quotedArtist = undefined;
     }
     // Back after a break with an enquiry or booking still under way: Pooja asks whether to go on with it, instead of
-    // sending the form again (a lead with no details yet, e.g. one who only said hello, has nothing to go on with)
-    const earlier = returning && firstReply && !restart ? await currentBooking(waId).catch(() => null) : null;
-    const returningWithBooking = Boolean(earlier && hasBookingDetails(earlier) && earlier.status !== 'confirmed' && earlier.status !== 'not_available');
-    // The first reply of a conversation starts with Pooja's welcome and the enquiry form, word for word
-    const welcomeFirst = restart || (firstReply && !returningWithBooking);
+    // starting afresh (a lead with no details yet, e.g. one who only said hello, has nothing to go on with)
+    const booking = await currentBooking(waId).catch(() => null);
+    const returningWithBooking =
+      returning && firstReply && !restart && Boolean(booking && hasBookingDetails(booking) && booking.status !== 'confirmed' && booking.status !== 'not_available');
 
-    // The welcome is the whole reply to a hello or "I need makeup services" (with the buttons on Meta)
-    if (welcomeFirst && welcomeIsTheWholeReply(question)) {
+    // Pooja's welcome, word for word, is the whole reply to a hello or "I need makeup services" (with the buttons on Meta)
+    if ((restart || (firstReply && !returningWithBooking)) && welcomeIsTheWholeReply(question)) {
       await transport.send(waId, WELCOME_MESSAGE, true);
       await chats.addReply(waId, WELCOME_MESSAGE, answered);
       console.log(`${LOG} welcomed ${who(waId)}${restart ? ' (asked for makeup services again: new conversation)' : returning ? ' (back after a break: new conversation)' : ''} via ${transport.name} ${seconds(Date.now() - started)} after the ${seconds(waitedMs)} wait`);
       return;
     }
 
-    const { reply, turn } = await answer(waId, chat, messages, { firstReply, welcomeFirst, returningWithBooking });
+    // Whatever they say next, the enquiry form follows Pooja's reply: once per conversation, while no enquiry is under way
+    const formDue = !formSentIn(current) && !returningWithBooking && !booking?.status;
+    let kind: Promise<FormKind> | undefined;
+    const formKind = () =>
+      (kind ??= (transport.enquiryFormReady?.() ?? Promise.resolve(false)).then(
+        (ready): FormKind => (ready ? 'whatsapp' : 'written'),
+        (): FormKind => 'written',
+      ));
+    const { reply, turn } = await answer(waId, chat, messages, { firstReply, formDue, returningWithBooking, formKind });
     // Coexistence: Deepika may have replied from her phone while the answer was being written
     if (SHARED_NUMBER && Date.now() < (await chats.pausedUntil(waId))) return;
-    // Brochures, quotations and the payment message word for word, where the reply puts them (or first)
-    const parts = reply === WELCOME_MESSAGE ? [{ text: reply }] : inOrder(reply, turn.outbox);
+    // Brochures, quotations and the payment message word for word, where the reply puts them (or first); the form after
+    const parts = [...(reply === WELCOME_MESSAGE ? [{ text: reply }] : inOrder(reply, turn.outbox)), ...turn.after];
     const sent = await sendAll(waId, transport, parts);
     if (sent.length) await chats.addReply(waId, sent.join('\n\n'), answered);
     else await chats.settle(waId, answered);
@@ -979,7 +1066,7 @@ async function replyTo(waId: string, latestId: number, transport: WhatsAppTransp
     if (turn.handoff && SHARED_NUMBER) await pauseBot(waId);
     const took = `${seconds(Date.now() - started)} after the ${seconds(waitedMs)} wait (search ${seconds(turn.searchMs)}, AI ${seconds(turn.aiMs)})`;
     const fixed = turn.outbox.length ? `${turn.outbox.length} fixed message(s)` : '';
-    const what = [fixed, reply && 'reply'].filter(Boolean).join(' + ');
+    const what = [fixed, reply && 'reply', turn.after.length && 'the enquiry form'].filter(Boolean).join(' + ');
     console.log(
       `${LOG} sent ${what || 'nothing more'} to ${who(waId)} via ${transport.name} ${took}${turn.enquirySent ? ` (enquiry #${turn.enquirySent} sent to the team)` : ''}${turn.advanceRequested ? ` (advance asked for booking #${turn.advanceRequested})` : ''}${turn.handoff ? ' and handed over to Deepika' : ''}`,
     );

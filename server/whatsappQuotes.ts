@@ -1,6 +1,6 @@
 /**
  * The WhatsApp assistant's fixed messages, sent word for word (server/whatsappBot.ts):
- * - Pooja's welcome with the enquiry form, the first reply in a conversation;
+ * - Pooja's welcome, the first reply to a hello, and the enquiry form as text (when the WhatsApp form can't be sent);
  * - the thank-you once the form is filled in, and what the customer hears when the team approves the enquiry (who
  *   does the makeup, then that artist's quotations) or isn't available;
  * - a quotation for each occasion, with the prices of the artist who will do the makeup (Deepika herself in the
@@ -35,7 +35,10 @@ export const ASSISTANT_ROLE = `${ARTIST}'s manager`;
 /** The first line of the welcome. */
 export const WELCOME_GREETING = `Hi there! 😊 I'm ${ASSISTANT_NAME}, ${ASSISTANT_ROLE}.`;
 
-/** The enquiry form, word for word as the team wrote it (2026-11-24). */
+/**
+ * The enquiry form, word for word as the team wrote it (2026-11-24). Sent as text where the WhatsApp form (with fields
+ * and a Submit button, server/enquiryForm.ts) can't be: before Meta approves it, or on Meta's Cloud API connection.
+ */
 export const ENQUIRY_FORM = `To help us understand your requirements and share an accurate quotation, kindly fill in the details below:
 
 📋 EVENT & MAKEUP REQUIREMENTS
@@ -63,8 +66,13 @@ Once you share the above details, our team will review your requirements and sha
 
 Thank you for considering Deepika Makeup and Hair. We look forward to being a part of your special occasion! ❤️`;
 
-/** Pooja's welcome, word for word: who she is, then the enquiry form. */
-export const WELCOME_MESSAGE = `${WELCOME_GREETING}\n\n${ENQUIRY_FORM}`;
+/**
+ * Pooja's welcome, word for word: the whole first reply to a hello or "Hi, I need makeup services.". The enquiry form
+ * follows her reply to whatever they say next.
+ */
+export const WELCOME_MESSAGE = `${WELCOME_GREETING}
+
+Welcome! How can I help you today? Are you looking for makeup services for a wedding or any special occasion?`;
 
 /** Sent once the enquiry form is complete; the team then reviews it. */
 export const ENQUIRY_RECEIVED_MESSAGE = `Thank you so much for sharing your details! ❤️

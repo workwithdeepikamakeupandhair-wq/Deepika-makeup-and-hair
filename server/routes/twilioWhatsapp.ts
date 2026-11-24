@@ -12,8 +12,10 @@
  */
 import crypto from 'node:crypto';
 import express, { Router, type Request } from 'express';
-import { registerTemplateSender } from '../approvals.js';
+import { registerTemplateSender, type WhatsAppTemplates } from '../approvals.js';
 import { inBackground } from '../background.js';
+import { enquiryFormAnswers } from '../enquiryForm.js';
+import { getSetting } from '../settings.js';
 import { receiveMessage, registerOutboundTransport, who, type InboundMessage, type MediaKind, type WhatsAppTransport } from '../whatsappBot.js';
 
 const LOG = '[whatsapp:twilio]';
@@ -31,6 +33,7 @@ const config = {
   // Only changed by the automated test, which points them at a local mock of Twilio
   apiUrl: process.env.TWILIO_API_URL?.trim() || 'https://api.twilio.com',
   messagingUrl: process.env.TWILIO_MESSAGING_URL?.trim() || 'https://messaging.twilio.com',
+  contentUrl: process.env.TWILIO_CONTENT_URL?.trim() || 'https://content.twilio.com',
 };
 
 export const twilioWhatsAppEnabled = Boolean(config.accountSid && config.authToken);
@@ -135,6 +138,28 @@ export function splitForTwilio(body: string, max = MAX_BODY): string[] {
 /** Typing indicators are a Twilio public beta: if Twilio refuses them, stop asking. */
 let typingSupported = true;
 
+/** How often an unapproved WhatsApp form is checked again with Twilio. */
+const FORM_CHECK_EVERY_MS = 10 * 60_000;
+const formApproval = { sid: '', approved: false, checkedAt: 0 };
+
+/**
+ * The WhatsApp enquiry form's template (`enquiryForm` in the settings' "whatsapp_templates"), once Meta has approved
+ * it; null until then, and the written form goes instead.
+ */
+async function approvedFormTemplate(): Promise<string | null> {
+  const { enquiryForm } = await getSetting<WhatsAppTemplates>('whatsapp_templates');
+  if (!enquiryForm) return null;
+  if (formApproval.sid === enquiryForm && (formApproval.approved || Date.now() - formApproval.checkedAt < FORM_CHECK_EVERY_MS)) {
+    return formApproval.approved ? enquiryForm : null;
+  }
+  const res = await fetch(`${config.contentUrl}/v1/Content/${enquiryForm}/ApprovalRequests`, { headers: { Authorization: basicAuth() }, signal: AbortSignal.timeout(10_000) });
+  const data = (await res.json().catch(() => ({}))) as { whatsapp?: { status?: string } };
+  const approved = res.ok && data.whatsapp?.status === 'approved';
+  Object.assign(formApproval, { sid: enquiryForm, approved, checkedAt: Date.now() });
+  console.log(`${LOG} WhatsApp enquiry form ${enquiryForm}: ${approved ? 'approved' : `not approved yet (${data.whatsapp?.status ?? `HTTP ${res.status}`}), so the written form is sent`}`);
+  return approved ? enquiryForm : null;
+}
+
 const transports = new Map<string, WhatsAppTransport>();
 
 /** Replies from `botNumber` (the number the customer wrote to), e.g. "+14155238886". */
@@ -153,6 +178,15 @@ function transportFor(botNumber: string, statusCallback: string | undefined): Wh
     },
     async sendImage(to, url, caption) {
       await twilioPost(messagesUrl, { ...common(to), MediaUrl: url, ...(caption ? { Body: caption.slice(0, MAX_BODY) } : {}) });
+    },
+    async sendEnquiryForm(to) {
+      const contentSid = await approvedFormTemplate();
+      if (!contentSid) return false;
+      await twilioPost(messagesUrl, { ...common(to), ContentSid: contentSid });
+      return true;
+    },
+    async enquiryFormReady() {
+      return Boolean(await approvedFormTemplate());
     },
     markReadAndTyping(messageId) {
       if (!typingSupported) return;
@@ -226,7 +260,17 @@ function toInbound(p: Form): InboundMessage | null {
   const from = p.WaId?.replace(/\D/g, '') || digits(p.From);
   if (!id || !from || !/^whatsapp:/i.test(p.From ?? '')) return null;
   const kind = Number(p.NumMedia) > 0 ? mediaKind(p.MediaContentType0) : undefined;
-  const text = p.Body?.trim() || p.ButtonText?.trim() || null;
+  // A submitted WhatsApp form (the enquiry form): its answers, as a message listing them
+  const submitted = p.InteractiveData || p.FlowData;
+  const form = submitted ? enquiryFormAnswers(submitted) : null;
+  if (submitted) {
+    console.log(
+      form
+        ? `${LOG} ${who(from)} submitted the enquiry form (answer keys: ${form.keys.join(', ')})`
+        : `${LOG} ${who(from)} submitted a WhatsApp form that couldn't be read (${submitted.length} characters, not JSON)`,
+    );
+  }
+  const text = form?.text ?? (p.Body?.trim() || p.ButtonText?.trim() || null);
   if (kind === 'sticker' && !text) return null;
   const mediaUrl = p.MediaUrl0;
   return {

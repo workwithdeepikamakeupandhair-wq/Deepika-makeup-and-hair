@@ -1,18 +1,21 @@
 /**
- * Creates the WhatsApp templates that send approvals to the approval numbers (server/approvals.ts), submits them to
- * Meta for approval through Twilio, and saves their IDs in the `settings` table:
- * - paymentApproval: a payment screenshot with the booking details (Approve / Not received);
- * - enquiryApproval: a completed enquiry form (Approve / Not available).
+ * Creates the WhatsApp templates, submits them to Meta for approval through Twilio, and saves their IDs in the
+ * `settings` table:
+ * - paymentApproval: a payment screenshot with the booking details for the approval numbers (Approve / Not received);
+ * - enquiryApproval: a completed enquiry form for the approval numbers (Approve / Not available);
+ * - enquiryForm: the enquiry form customers fill in inside WhatsApp (server/enquiryForm.ts).
  * Run once; a template that already exists is not created again:
  *   node node_modules/tsx/dist/cli.mjs server/scripts/create-approval-template.ts                   (create missing ones, show the status)
- *   node node_modules/tsx/dist/cli.mjs server/scripts/create-approval-template.ts --new enquiry     (create a new enquiry template anyway)
+ *   node node_modules/tsx/dist/cli.mjs server/scripts/create-approval-template.ts --new form        (create a new form template anyway)
  *   node node_modules/tsx/dist/cli.mjs server/scripts/create-approval-template.ts --sid HX… payment (submit one created earlier)
- * Meta usually approves within minutes, at most about a day. Until then, approvals happen in the dashboard.
+ * Meta usually approves within minutes, at most about a day. Until then, approvals happen in the dashboard and
+ * customers get the written form.
  */
 import '../env.js';
 import { BUSINESS_INFO as B } from '../../src/data/portfolioData.js';
 import type { ApprovalTemplateVariables, EnquiryTemplateVariables, WhatsAppTemplates } from '../approvals.js';
 import { getDb, pool } from '../db.js';
+import { enquiryFormTemplate } from '../enquiryForm.js';
 import { getSetting } from '../settings.js';
 
 const accountSid = (process.env.TWILIO_ACCOUNT_SID || process.env.ACCOUNT_SID || '').trim();
@@ -92,9 +95,10 @@ const TEMPLATES: Record<keyof WhatsAppTemplates, Record<string, unknown>> = {
       },
     },
   },
+  enquiryForm: enquiryFormTemplate(),
 };
 
-const KIND_ARG: Record<string, keyof WhatsAppTemplates> = { payment: 'paymentApproval', enquiry: 'enquiryApproval' };
+const KIND_ARG: Record<string, keyof WhatsAppTemplates> = { payment: 'paymentApproval', enquiry: 'enquiryApproval', form: 'enquiryForm' };
 const argAfter = (flag: string) => (process.argv.includes(flag) ? process.argv[process.argv.indexOf(flag) + 1] : undefined);
 
 try {
@@ -103,7 +107,7 @@ try {
   const renew = KIND_ARG[argAfter('--new') ?? ''];
   const givenSid = argAfter('--sid');
   const existing = givenSid && /^HX[0-9a-f]{32}$/.test(givenSid) ? { sid: givenSid, kind: KIND_ARG[process.argv[process.argv.indexOf('--sid') + 2] ?? ''] } : null;
-  if (givenSid && !existing?.kind) throw new Error('Use --sid HX… payment|enquiry');
+  if (givenSid && !existing?.kind) throw new Error('Use --sid HX… payment|enquiry|form');
 
   for (const kind of Object.keys(TEMPLATES) as (keyof WhatsAppTemplates)[]) {
     let sid = saved[kind];
